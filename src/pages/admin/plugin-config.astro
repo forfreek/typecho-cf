@@ -1,0 +1,68 @@
+---
+/**
+ * Plugin Configuration Page
+ * Equivalent to PHP Typecho's options-plugin.php
+ *
+ * Loads the plugin manifest's config definition and renders the shared
+ * ConfigForm component. URL: /admin/plugin-config?id=<pluginId>
+ */
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+import {
+  getPlugin,
+  pluginHasConfig,
+  isPluginActive,
+} from '@/lib/plugin';
+import { getPluginConfigurationView } from '@/lib/plugin-config';
+import ConfigForm from '@/components/admin/ConfigForm.astro';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { options, urls, user, csrfToken } = ctx;
+
+// Get plugin ID from query string
+const pluginId = Astro.url.searchParams.get('id') || '';
+const plugin = getPlugin(pluginId);
+
+// Validate
+if (!plugin || !pluginHasConfig(pluginId)) {
+  return Astro.redirect('/admin/plugins');
+}
+
+if (!isPluginActive(ctx, pluginId)) {
+  return Astro.redirect('/admin/plugins');
+}
+
+const manifest = plugin.manifest;
+const configuration = getPluginConfigurationView(options, pluginId);
+const configDef = configuration.fields;
+const configValues = configuration.values;
+const pluginDisplayName = ctx.i18n.t(`plugin.${plugin.id}.name`, {}, manifest.name || pluginId);
+const message = Astro.url.searchParams.get('saved') === '1'
+  ? ctx.i18n.t('admin.config.pluginSaved', {}, 'Plugin settings saved')
+  : '';
+
+const pageTitle = ctx.i18n.t('admin.config.pluginTitle', { name: pluginDisplayName }, `Plugin settings: ${pluginDisplayName}`);
+---
+<Admin title={pageTitle} options={options} urls={urls} user={user} activeMenu="plugins" pluginCtx={ctx}>
+  <ConfigForm
+    action="/api/admin/plugin-config"
+    csrfToken={csrfToken}
+    entityName="plugin"
+    entityId={pluginId}
+    configDef={configDef}
+    configValues={configValues}
+    message={message}
+    backHref="/admin/plugins"
+    backLabel={ctx.i18n.t('admin.config.backPlugins', {}, 'Back to plugins')}
+    i18n={ctx.i18n}
+    optionSourceRuntime={ctx.capabilityRuntime}
+  />
+</Admin>

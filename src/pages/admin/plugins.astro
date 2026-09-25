@@ -1,0 +1,254 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission, requireAdminCSRF } from '@/lib/auth';
+import { getAvailablePlugins, getPluginCount, getPluginInitFailures, pluginHasConfig, parseActivatedPlugins } from '@/lib/plugin';
+import { createRequestI18n } from '@/lib/i18n-runtime';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { options, urls, user, db, csrfToken } = ctx;
+
+// Handle plugin activation/deactivation via POST
+let message = '';
+let messageType = '';
+
+if (Astro.request.method === 'POST') {
+  const csrfError = await requireAdminCSRF(Astro.request, options.secret as string, user!.authCode!, user!.uid, ctx.i18n);
+  if (csrfError) return csrfError;
+  try {
+    const formData = await Astro.request.formData();
+    const action = formData.get('action') as string;
+    const pluginId = formData.get('plugin') as string;
+
+    if (pluginId && (action === 'activate' || action === 'deactivate')) {
+      const { pluginExists, setActivatedPlugins, getPluginConfigDefaults, getPluginActivationActionPlan } = await import('@/lib/plugin');
+      const { setOption } = await import('@/lib/options');
+
+      if (!pluginExists(pluginId)) {
+        message = ctx.i18n.t('admin.plugin.notFound', { id: pluginId }, `Plugin "${pluginId}" does not exist`);
+        messageType = 'error';
+      } else {
+        // Use the same dependency-aware action planner as the JSON API.
+        const currentIds = parseActivatedPlugins(options.activatedPlugins as string | undefined);
+        const activationPlan = getPluginActivationActionPlan(currentIds, pluginId, action);
+        if (!activationPlan.ok) {
+          message = activationPlan.diagnostics
+            .filter(issue => issue.pluginId === pluginId || issue.dependencyId === pluginId)
+            .map(issue => issue.message)
+            .join(' ') || ctx.i18n.t('admin.plugin.dependenciesUnsatisfied', {}, 'Plugin dependencies are not satisfied.');
+          messageType = 'error';
+        } else if (action === 'activate') {
+
+          // Save default config values on activation (like PHP Typecho's Edit::activate)
+          if (pluginHasConfig(pluginId)) {
+            const defaults = getPluginConfigDefaults(pluginId);
+            if (Object.keys(defaults).length > 0) {
+              // Only save defaults if no config exists yet
+              const existing = options[`plugin:${pluginId}`];
+              if (!existing) {
+                await setOption(db, `plugin:${pluginId}`, JSON.stringify(defaults));
+                (options as any)[`plugin:${pluginId}`] = JSON.stringify(defaults);
+              }
+            }
+          }
+
+          message = ctx.i18n.t('admin.plugin.activated', { id: pluginId }, `Plugin "${pluginId}" enabled`);
+          messageType = 'success';
+        } else {
+          const cascade = activationPlan.cascadedDependents.length > 0
+            ? ` (${ctx.i18n.t('admin.plugin.dependentsDisabled', { ids: activationPlan.cascadedDependents.join(', ') }, `also disabled: ${activationPlan.cascadedDependents.join(', ')}`)})`
+            : '';
+          message = ctx.i18n.t('admin.plugin.deactivated', { id: pluginId }, `Plugin "${pluginId}" disabled`) + cascade;
+          messageType = 'success';
+        }
+
+        if (activationPlan.ok) {
+          // Persist the corrected effective list. Disabling a plugin keeps
+          // its configuration so a later re-enable can restore it.
+          const newIds = activationPlan.effective;
+          await setActivatedPlugins(ctx, newIds);
+          const serialized = JSON.stringify(newIds);
+          await setOption(db, 'activatedPlugins', serialized);
+          (options as any).activatedPlugins = serialized;
+          // The current response must observe the new active catalog set too;
+          // otherwise a just-deactivated plugin could still translate this
+          // page, while a just-activated plugin would not be visible until the
+          // next request.
+          const runtime = createRequestI18n(options.lang, Astro.request, ctx.activatedPlugins);
+          ctx.i18n = runtime.i18n;
+          ctx.resolvedLocale = runtime.resolvedLocale;
+          ctx.autoLocale = runtime.autoLocale;
+        }
+      }
+    }
+  } catch (e) {
+    message = ctx.i18n.t('admin.error.operationFailed', {}, 'Operation failed');
+    messageType = 'error';
+  }
+}
+
+const plugins = getAvailablePlugins(ctx);
+const pluginCount = getPluginCount();
+const initFailures = getPluginInitFailures();
+const pluginName = (plugin: typeof plugins[number]): string => plugin.isActive
+  ? ctx.i18n.t(`plugin.${plugin.id}.name`, {}, plugin.manifest.name || plugin.id)
+  : (plugin.manifest.name || plugin.id);
+const pluginDescription = (plugin: typeof plugins[number]): string => plugin.isActive
+  ? ctx.i18n.t(`plugin.${plugin.id}.description`, {}, plugin.manifest.description || '')
+  : (plugin.manifest.description || '');
+---
+<Admin title={ctx.i18n.t('admin.page.plugins', {}, 'Plugin management')} options={options} urls={urls} user={user} activeMenu="plugins" pluginCtx={ctx}>
+  <div class="col-mb-12" role="main">
+    {message && (
+      <div class={`typecho-option-tabs notice typecho-dismissible admin-notice ${messageType === 'error' ? 'notice-error admin-notice--error' : 'notice-success admin-notice--success'}`}>
+        <p>{message}</p>
+        <button type="button" class="typecho-notice-close" aria-label={ctx.i18n.t('admin.action.closeNotice', {}, 'Close notice')}>&times;</button>
+      </div>
+    )}
+    {Object.keys(initFailures).length > 0 && (
+      <div class="typecho-option-tabs notice notice-error typecho-dismissible admin-notice admin-notice--error">
+        <p>{ctx.i18n.t('admin.plugin.initializationFailed', {}, 'The following active plugins failed to initialize (they will be retried):')}</p>
+        <ul>
+          {Object.entries(initFailures).map(([id, failure]) => (
+            <li><code>{id}</code>: {failure.error} ({ctx.i18n.t('admin.plugin.attempts', { count: failure.attempts }, 'attempts: {count}')})</li>
+          ))}
+        </ul>
+        <button type="button" class="typecho-notice-close" aria-label={ctx.i18n.t('admin.action.closeNotice', {}, 'Close notice')}>&times;</button>
+      </div>
+    )}
+
+    {pluginCount === 0 ? (
+      <div class="admin-panel admin-panel--empty">
+        <h3>{ctx.i18n.t('admin.notice.noPlugins', {}, 'No plugins')}</h3>
+      </div>
+    ) : (
+      <>
+
+        <div class="typecho-list-operate clearfix">
+          <div class="operate">
+            <span>{ctx.i18n.t('admin.status.discovered', { count: pluginCount }, '{count} items found')}</span>
+          </div>
+        </div>
+
+        <div class="typecho-table-wrap">
+          <table class="typecho-list-table">
+            <colgroup>
+              <col width="30%" />
+              <col width="35%" />
+              <col width="15%" />
+              <col width="20%" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>{ctx.i18n.t('admin.plugin.table', {}, 'Plugin')}</th>
+                <th>{ctx.i18n.t('admin.field.description', {}, 'Description')}</th>
+                <th>{ctx.i18n.t('admin.field.version', {}, 'Version')}</th>
+                <th>{ctx.i18n.t('admin.action.actions', {}, 'Actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plugins.map((plugin) => (
+                <tr id={`plugin-${plugin.id}`}>
+                  <td>
+                    <strong>
+                      {plugin.manifest.homepage ? (
+                        <a href={plugin.manifest.homepage} target="_blank" rel="noopener noreferrer">
+                          {pluginName(plugin)}
+                        </a>
+                      ) : (
+                        pluginName(plugin)
+                      )}
+                    </strong>
+                    {plugin.isActive && (
+                      <span class="admin-badge admin-badge--active admin-badge--spaced">
+                        {ctx.i18n.t('admin.status.enabled', {}, 'Enabled')}
+                      </span>
+                    )}
+                    {plugin.status === 'blocked' && (
+                      <span class="admin-badge admin-badge--warning admin-badge--spaced">
+                        {ctx.i18n.t('admin.plugin.blocked', {}, 'Blocked')}
+                      </span>
+                    )}
+                    {plugin.status === 'initialization-failed' && (
+                      <span class="admin-badge admin-badge--warning admin-badge--spaced">
+                        {ctx.i18n.t('admin.plugin.initializationFailedShort', {}, 'Initialization failed')}
+                      </span>
+                    )}
+                    <br />
+                    <small class="admin-meta">
+                      {plugin.manifest.author && (
+                        <span>
+                          {ctx.i18n.t('admin.theme.author', {}, 'Author')}: {plugin.manifest.authorUrl ? (
+                            <a href={plugin.manifest.authorUrl} target="_blank" rel="noopener noreferrer">{plugin.manifest.author}</a>
+                          ) : (
+                            plugin.manifest.author
+                          )}
+                        </span>
+                      )}
+                      {' · '}npm: {plugin.packageName}
+                    </small>
+                  </td>
+                  <td>
+                    <span class="description">
+                      {pluginDescription(plugin) || ctx.i18n.t('admin.status.noDescription', {}, 'No description')}
+                    </span>
+                    {plugin.status === 'blocked' && (
+                      <div class="admin-meta">
+                        {(plugin.dependencyIssues || []).map(issue => (
+                          <div>{issue.message}</div>
+                        ))}
+                        {(plugin.dependencyIssues || []).length === 0 && (
+                          <div>{ctx.i18n.t('admin.plugin.blockedDescription', {}, 'A required dependency is unavailable or failed to initialize.')}</div>
+                        )}
+                      </div>
+                    )}
+                    {plugin.status !== 'blocked' && (plugin.dependencyIssues || []).some(issue => issue.code === 'unverifiable-dependency-range') && (
+                      <div class="admin-meta">
+                        {(plugin.dependencyIssues || [])
+                          .filter(issue => issue.code === 'unverifiable-dependency-range')
+                          .map(issue => (
+                            <div>{issue.message}</div>
+                          ))}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    {plugin.manifest.version || '-'}
+                  </td>
+                  <td>
+                    <form method="post" action="/admin/plugins" class="admin-actions">
+                      <input type="hidden" name="_" value={csrfToken} />
+                      <input type="hidden" name="plugin" value={plugin.id} />
+                      {plugin.isActive ? (
+                        <>
+                          {pluginHasConfig(plugin.id) && (
+                            <a href={`/admin/plugin-config?id=${plugin.id}`} class="btn btn-s">{ctx.i18n.t('admin.action.settings', {}, 'Settings')}</a>
+                          )}
+                          <input type="hidden" name="action" value="deactivate" />
+                          <button type="submit" class="btn btn-s">{ctx.i18n.t('admin.action.disable', {}, 'Disable')}</button>
+                        </>
+                      ) : (
+                        <>
+                          <input type="hidden" name="action" value="activate" />
+                          <button type="submit" class="btn btn-s primary">{ctx.i18n.t('admin.action.enable', {}, 'Enable')}</button>
+                        </>
+                      )}
+                    </form>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )}
+
+  </div>
+</Admin>

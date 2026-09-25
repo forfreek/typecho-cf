@@ -1,0 +1,367 @@
+---
+/**
+ * Shared admin configuration form for plugin and theme settings.
+ *
+ * ConfigField.astro owns recursive field rendering, so repeatable fields can
+ * contain further repeatables without creating a second bespoke form schema.
+ */
+import type { CapabilityRuntimeContext } from '@/lib/capability';
+import { type ConfigField } from '@/lib/config';
+import type { I18n } from '@/lib/i18n';
+import ConfigFieldRenderer from './ConfigField.astro';
+
+interface Props {
+  action: string;
+  csrfToken: string;
+  entityName: string;
+  entityId: string;
+  configDef: Record<string, ConfigField>;
+  configValues: Record<string, unknown>;
+  message?: string;
+  backHref: string;
+  backLabel: string;
+  i18n?: I18n;
+  /** Request-scoped capability context forwarded to capability option sources. */
+  optionSourceRuntime?: CapabilityRuntimeContext;
+}
+
+const {
+  action,
+  csrfToken,
+  entityName,
+  entityId,
+  configDef,
+  configValues,
+  message = '',
+  backHref,
+  backLabel,
+  i18n,
+  optionSourceRuntime,
+} = Astro.props;
+
+const t = (key: string, variables: Record<string, string | number> = {}, fallback = key): string =>
+  i18n?.t(key, variables, fallback) ?? fallback;
+
+const configScope = `${entityName}.${entityId}.config`;
+---
+<div class="col-mb-12" role="form">
+  {message && (
+    <div class="typecho-option-tabs notice typecho-dismissible notice-success admin-notice admin-notice--success">
+      <p>{message}</p>
+      <button type="button" class="typecho-notice-close" aria-label={t('admin.action.closeNotice', {}, 'Close notice')}>&times;</button>
+    </div>
+  )}
+
+  <form method="post" action={action} data-config-form>
+    <input type="hidden" name="_" value={csrfToken} />
+    <input type="hidden" name={entityName} value={entityId} />
+    <ul class="typecho-option">
+      {Object.entries(configDef).map(([key, field]) => (
+        <li>
+          <ConfigFieldRenderer
+            field={field}
+            name={key}
+            id={`cfg-${key}`}
+            path={key}
+            value={configValues[key] ?? field.default}
+            configScope={configScope}
+            i18n={i18n}
+            optionSourceRuntime={optionSourceRuntime}
+          />
+        </li>
+      ))}
+    </ul>
+
+    <ul class="typecho-option typecho-option-submit">
+      <li>
+        <button type="submit" class="btn primary">{t('admin.action.save', {}, 'Save settings')}</button>
+        <a href={backHref} class="btn">{backLabel}</a>
+      </li>
+    </ul>
+  </form>
+</div>
+<script is:inline>
+  (function () {
+    function ownFields(scope, selector) {
+      return Array.from(scope.querySelectorAll(selector)).filter(function (element) {
+        return element.closest('.typecho-repeatable-item') === scope;
+      });
+    }
+
+    function ownControls(item, fieldName) {
+      return ownFields(item, '[name$="[' + fieldName + ']"]');
+    }
+
+    function toggleConditionalFields(item) {
+      ownFields(item, '[data-show-when-field]').forEach(function (field) {
+        var controllerName = field.getAttribute('data-show-when-field');
+        var expected = String(field.getAttribute('data-show-when-value') || '').split(',');
+        var controllers = controllerName ? ownControls(item, controllerName) : [];
+        var values = controllers.length > 0 && controllers[0] instanceof HTMLInputElement && controllers[0].type === 'checkbox'
+          ? controllers.filter(function (input) { return input.checked; }).map(function (input) { return input.value; })
+          : [controllers.length > 0 ? controllers[0].value : ''];
+        var visible = controllers.length === 0 || values.some(function (current) {
+          return expected.indexOf(String(current || '')) >= 0;
+        });
+        field.classList.toggle('hidden', !visible);
+        Array.from(field.querySelectorAll('input, textarea, select')).forEach(function (input) {
+          if (input.closest('[data-show-when-field]') === field) input.disabled = !visible;
+        });
+      });
+    }
+
+    function refreshSummary(item) {
+      var root = item.closest('.typecho-repeatable');
+      var summary = item.querySelector(':scope > legend [data-item-summary]');
+      if (!root || !summary) return;
+      var fields = (root.getAttribute('data-summary-fields') || '').split(',').filter(Boolean);
+      var parts = [];
+      fields.forEach(function (fieldName) {
+        var control = ownControls(item, fieldName)[0];
+        if (!control) return;
+        var value = String(control.value || '').trim();
+        if (value !== '') parts.push(value);
+      });
+      var text = root.getAttribute('data-summary-format') === 'parenthesized' && parts.length > 1
+        ? parts[0] + '(' + parts.slice(1).join(' · ') + ')'
+        : parts.join(' · ');
+      if (!text && root.getAttribute('data-summary-as-title') === 'true') {
+        var items = root.querySelector(':scope > .typecho-repeatable-items');
+        var index = items ? Array.prototype.indexOf.call(items.children, item) + 1 : 1;
+        var label = root.getAttribute('data-label-translated') || root.getAttribute('data-label') || '';
+        text = label + ' #' + String(index);
+      }
+      summary.textContent = text;
+    }
+
+    function refreshBadge(item) {
+      var root = item.closest('.typecho-repeatable');
+      var badge = item.querySelector(':scope > .typecho-repeatable-header [data-item-badge]');
+      var statusField = root ? root.getAttribute('data-status-field') : '';
+      if (!root || !badge || !statusField) return;
+      var control = ownControls(item, statusField)[0];
+      if (!control) return;
+      var enabled = control instanceof HTMLInputElement && control.type === 'checkbox'
+        ? control.checked
+        : control.value === 'true' || control.value === '1';
+      var option = control instanceof HTMLSelectElement ? control.options[control.selectedIndex] : null;
+      badge.textContent = option && option.textContent ? option.textContent : (enabled ? 'Enabled' : 'Disabled');
+      badge.classList.toggle('admin-badge--active', enabled);
+      badge.classList.toggle('admin-badge--muted', !enabled);
+    }
+
+    function refreshItem(item) {
+      toggleConditionalFields(item);
+      refreshSummary(item);
+      refreshBadge(item);
+    }
+
+    function renumberRepeatableItems(root) {
+      var label = root.getAttribute('data-label-translated') || root.getAttribute('data-label') || '';
+      var summaryAsTitle = root.getAttribute('data-summary-as-title') === 'true';
+      root.querySelectorAll(':scope > .typecho-repeatable-items > .typecho-repeatable-item').forEach(function (item, index) {
+        if (summaryAsTitle) {
+          refreshSummary(item);
+          return;
+        }
+        var indexLabel = item.querySelector(':scope > .typecho-repeatable-header [data-index-label]');
+        if (indexLabel) {
+          indexLabel.textContent = label + ' #' + String(index + 1);
+          return;
+        }
+        var legend = item.querySelector(':scope > legend');
+        if (legend) legend.textContent = label + ' #' + String(index + 1);
+      });
+    }
+
+    function addRepeatableRow(root) {
+      var items = root.querySelector(':scope > .typecho-repeatable-items');
+      var template = root.querySelector(':scope > .typecho-repeatable-template');
+      if (!items || !(template instanceof HTMLTemplateElement)) return;
+      var index = Number(root.getAttribute('data-next-index') || items.querySelectorAll(':scope > .typecho-repeatable-item').length);
+      root.setAttribute('data-next-index', String(index + 1));
+      var wrapper = document.createElement('div');
+      wrapper.appendChild(template.content.cloneNode(true));
+      wrapper.innerHTML = wrapper.innerHTML
+        .replace(/__INDEX__/g, String(index))
+        .replace(/__NUMBER__/g, String(index + 1));
+      while (wrapper.firstElementChild) {
+        var element = wrapper.firstElementChild;
+        items.appendChild(element);
+        if (element instanceof HTMLElement) {
+          element.querySelectorAll('.typecho-repeatable-item').forEach(refreshItem);
+          refreshItem(element);
+        }
+      }
+      renumberRepeatableItems(root);
+    }
+
+    function refreshTokenEmptyState(list) {
+      var empty = list.querySelector(':scope > [data-token-empty]');
+      var rows = list.querySelectorAll(':scope > .typecho-token-items > [data-token-row]');
+      if (empty) empty.hidden = rows.length > 0;
+    }
+
+    function refreshTokenLimit(list) {
+      var max = Number(list.getAttribute('data-max') || '0');
+      if (!max) return;
+      var rows = list.querySelectorAll(':scope > .typecho-token-items > [data-token-row]').length;
+      var atLimit = rows >= max;
+      var generate = list.querySelector(':scope > .typecho-token-generate');
+      var hint = list.querySelector(':scope > [data-token-limit]');
+      if (generate instanceof HTMLButtonElement) generate.disabled = atLimit;
+      if (hint) hint.hidden = !atLimit;
+    }
+
+    var TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+    function randomToken(length) {
+      var limit = Math.floor(256 / TOKEN_ALPHABET.length) * TOKEN_ALPHABET.length;
+      var value = '';
+      while (value.length < length) {
+        var bytes = new Uint8Array(length * 2);
+        crypto.getRandomValues(bytes);
+        for (var index = 0; index < bytes.length && value.length < length; index += 1) {
+          if (bytes[index] >= limit) continue;
+          value += TOKEN_ALPHABET.charAt(bytes[index] % TOKEN_ALPHABET.length);
+        }
+      }
+      return value;
+    }
+
+
+    function addTokenRow(list) {
+      var items = list.querySelector(':scope > .typecho-token-items');
+      var template = list.querySelector(':scope > .typecho-token-template');
+      if (!items || !(template instanceof HTMLTemplateElement)) return;
+      var index = Number(list.getAttribute('data-next-index') || items.querySelectorAll(':scope > [data-token-row]').length);
+      list.setAttribute('data-next-index', String(index + 1));
+      var tokenId = 't' + Date.now().toString(16) + Math.random().toString(16).slice(2, 10);
+      var token = randomToken(64);
+      var wrapper = document.createElement('div');
+      wrapper.appendChild(template.content.cloneNode(true));
+      wrapper.innerHTML = wrapper.innerHTML
+        .replace(/__INDEX__/g, String(index))
+        .replace(/__TOKEN_ID__/g, tokenId);
+      while (wrapper.firstElementChild) {
+        var row = wrapper.firstElementChild;
+        items.appendChild(row);
+        if (row instanceof HTMLElement) {
+          var valueInput = row.querySelector('[data-token-value]');
+          var display = row.querySelector('[data-token-display]');
+          if (valueInput instanceof HTMLInputElement) valueInput.value = token;
+          if (display) display.textContent = token;
+        }
+      }
+      refreshTokenEmptyState(list);
+      refreshTokenLimit(list);
+    }
+
+    function fallbackCopy(value, done) {
+      var area = document.createElement('textarea');
+      area.value = value;
+      area.setAttribute('readonly', 'readonly');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      try { document.execCommand('copy'); done(); } catch (error) { /* clipboard unavailable */ }
+      area.remove();
+    }
+
+    function copyTokenValue(value, button) {
+      var done = function () {
+        var label = button.getAttribute('data-copied-label');
+        if (!label) return;
+        var original = button.textContent;
+        button.textContent = label;
+        window.setTimeout(function () { button.textContent = original; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(done, function () { fallbackCopy(value, done); });
+        return;
+      }
+      fallbackCopy(value, done);
+    }
+
+    function onClick(event) {
+      var target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+
+      var toggle = target.closest('.typecho-repeatable-toggle');
+      if (toggle) {
+        var toggleItem = toggle.closest('.typecho-repeatable-item');
+        if (toggleItem) {
+          var collapsed = toggleItem.classList.toggle('is-collapsed');
+          toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        }
+        return;
+      }
+
+      var addButton = target.closest('.typecho-repeatable-add');
+      if (addButton) {
+        var addRoot = addButton.closest('.typecho-repeatable');
+        if (addRoot) addRepeatableRow(addRoot);
+        return;
+      }
+
+      var removeButton = target.closest('.typecho-repeatable-remove');
+      if (removeButton) {
+        var removeItem = removeButton.closest('.typecho-repeatable-item');
+        var removeRoot = removeButton.closest('.typecho-repeatable');
+        if (removeItem) removeItem.remove();
+        if (removeRoot) {
+          renumberRepeatableItems(removeRoot);
+          var parentItem = removeRoot.closest('.typecho-repeatable-item');
+          if (parentItem) refreshItem(parentItem);
+        }
+        return;
+      }
+
+      var generateButton = target.closest('.typecho-token-generate');
+      if (generateButton) {
+        var list = generateButton.closest('[data-token-list]');
+        if (list) addTokenRow(list);
+        return;
+      }
+
+      var tokenRemove = target.closest('.typecho-token-remove');
+      if (tokenRemove) {
+        var tokenRow = tokenRemove.closest('[data-token-row]');
+        var tokenList = tokenRemove.closest('[data-token-list]');
+        if (tokenRow) tokenRow.remove();
+        if (tokenList) {
+          refreshTokenEmptyState(tokenList);
+          refreshTokenLimit(tokenList);
+        }
+        return;
+      }
+
+      var copyButton = target.closest('.typecho-token-copy');
+      if (copyButton) {
+        var copyRow = copyButton.closest('[data-token-row]');
+        var valueInput = copyRow ? copyRow.querySelector('[data-token-value]') : null;
+        if (valueInput instanceof HTMLInputElement && valueInput.value) copyTokenValue(valueInput.value, copyButton);
+      }
+    }
+
+    function onFieldChange(event) {
+      var target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      var item = target.closest('.typecho-repeatable-item');
+      if (item) refreshItem(item);
+    }
+
+    document.querySelectorAll('[data-config-form]').forEach(function (form) {
+      if (!(form instanceof HTMLFormElement)) return;
+      form.addEventListener('click', onClick);
+      form.addEventListener('input', onFieldChange);
+      form.addEventListener('change', onFieldChange);
+      form.querySelectorAll('.typecho-repeatable-item').forEach(refreshItem);
+      form.querySelectorAll('[data-token-list]').forEach(refreshTokenLimit);
+      form.querySelectorAll('select[data-current-value]').forEach(function (select) {
+        if (select instanceof HTMLSelectElement) select.value = select.getAttribute('data-current-value') || '';
+      });
+    });
+  })();
+</script>

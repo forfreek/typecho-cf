@@ -1,0 +1,520 @@
+---
+import type { SiteOptions } from '@/lib/options';
+import type { computeUrls } from '@/lib/options';
+import type { UserRow } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+import { applyFilterSafely, doHook, type HookContext } from '@/lib/plugin';
+import { clearAdminFlash, readAdminFlash } from '@/lib/admin-flash';
+import type { I18n } from '@/lib/i18n';
+import { safeJsonForScript } from '@/lib/escape';
+
+interface Props {
+  title: string;
+  options: SiteOptions;
+  urls: ReturnType<typeof computeUrls>;
+  user: UserRow;
+  activeMenu?: string;
+  bodyClass?: string;
+  pluginCtx?: HookContext;
+  i18n?: I18n;
+}
+
+const { title, options, urls, user, activeMenu, bodyClass, pluginCtx, i18n } = Astro.props;
+const _pluginCtx: HookContext = pluginCtx ?? { activatedPlugins: new Set<string>() };
+const pageI18n = i18n ?? pluginCtx?.i18n;
+const documentLocale = pageI18n?.locale || (options.lang === 'zh_CN' ? 'zh-CN' : 'en');
+const t = (key: string, variables: Record<string, string | number> = {}, fallback = key): string =>
+  pageI18n?.t(key, variables, fallback) ?? fallback;
+
+const userGroup = user?.group || 'visitor';
+const isAdmin = hasPermission(userGroup, 'administrator');
+const isEditor = hasPermission(userGroup, 'editor');
+const isContributor = hasPermission(userGroup, 'contributor');
+
+interface AdminMenuItem {
+  label: string;
+  href: string;
+  active?: boolean;
+  show?: boolean;
+}
+
+interface AdminMenuGroup {
+  label: string;
+  show?: boolean;
+  children: AdminMenuItem[];
+}
+
+// Typecho 原版菜单结构：嵌套的 ul.root > li.parent + ul.child
+const menuGroups: AdminMenuGroup[] = [
+  {
+    label: t('admin.menu.dashboard', {}, 'Dashboard'),
+    show: isContributor,
+    children: [
+      { label: t('admin.menu.overview', {}, 'Overview'), href: '/admin/', active: activeMenu === 'dashboard', show: isContributor },
+      { label: t('admin.menu.profile', {}, 'Profile'), href: '/admin/profile', active: activeMenu === 'profile', show: true },
+      { label: t('admin.menu.plugins', {}, 'Plugins'), href: '/admin/plugins', active: activeMenu === 'plugins', show: isAdmin },
+      { label: t('admin.menu.themes', {}, 'Appearance'), href: '/admin/themes', active: activeMenu === 'themes', show: isAdmin },
+    ],
+  },
+  {
+    label: t('admin.menu.write', {}, 'Write'),
+    show: isContributor,
+    children: [
+      { label: t('admin.menu.writePost', {}, 'Write post'), href: '/admin/write-post', active: activeMenu === 'write-post', show: isContributor },
+      { label: t('admin.menu.writePage', {}, 'Create page'), href: '/admin/write-page', active: activeMenu === 'write-page', show: isEditor },
+    ],
+  },
+  {
+    label: t('admin.menu.manage', {}, 'Manage'),
+    show: isContributor,
+    children: [
+      { label: t('admin.menu.posts', {}, 'Posts'), href: '/admin/manage-posts', active: activeMenu === 'manage-posts', show: isContributor },
+      { label: t('admin.menu.pages', {}, 'Pages'), href: '/admin/manage-pages', active: activeMenu === 'manage-pages', show: isEditor },
+      { label: t('admin.menu.comments', {}, 'Comments'), href: '/admin/manage-comments', active: activeMenu === 'manage-comments', show: isContributor },
+      { label: t('admin.menu.categories', {}, 'Categories'), href: '/admin/manage-categories', active: activeMenu === 'manage-categories', show: isEditor },
+      { label: t('admin.menu.tags', {}, 'Tags'), href: '/admin/manage-tags', active: activeMenu === 'manage-tags', show: isEditor },
+      { label: t('admin.menu.medias', {}, 'Media'), href: '/admin/manage-medias', active: activeMenu === 'manage-medias', show: isEditor },
+      { label: t('admin.menu.users', {}, 'Users'), href: '/admin/manage-users', active: activeMenu === 'manage-users', show: isAdmin },
+      { label: t('admin.menu.queues', {}, 'Queues'), href: '/admin/manage-queues', active: activeMenu === 'manage-queues', show: isAdmin },
+    ],
+  },
+  {
+    label: t('admin.menu.settings', {}, 'Settings'),
+    show: isAdmin,
+    children: [
+      { label: t('admin.menu.general', {}, 'General'), href: '/admin/options-general', active: activeMenu === 'options', show: isAdmin },
+      { label: t('admin.menu.discussion', {}, 'Discussion'), href: '/admin/options-discussion', active: activeMenu === 'options-discussion', show: isAdmin },
+      { label: t('admin.menu.reading', {}, 'Reading'), href: '/admin/options-reading', active: activeMenu === 'options-reading', show: isAdmin },
+      { label: t('admin.menu.permalink', {}, 'Permalinks'), href: '/admin/options-permalink', active: activeMenu === 'options-permalink', show: isAdmin },
+    ],
+  },
+];
+
+const adminHookContext = {
+  request: Astro.request,
+  path: Astro.url.pathname,
+  method: Astro.request.method,
+  options,
+  urls,
+  user,
+  activeMenu,
+  title,
+  i18n: pageI18n,
+  capabilityRuntime: _pluginCtx.capabilityRuntime,
+};
+await doHook(_pluginCtx, 'admin:begin', adminHookContext);
+
+function isSafeAdminHref(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 512 || /[\u0000-\u001f]/.test(value)) return false;
+  if (value === '#') return true;
+  try {
+    const parsed = new URL(value, Astro.url);
+    return parsed.origin === Astro.url.origin
+      && (parsed.pathname === '/admin' || parsed.pathname.startsWith('/admin/'));
+  } catch {
+    return false;
+  }
+}
+
+function normalizeMenuGroups(value: unknown, fallback: AdminMenuGroup[]): AdminMenuGroup[] {
+  if (!Array.isArray(value)) return fallback;
+  const fallbackByLabel = new Map(fallback.map(group => [group.label, group]));
+  const groups: AdminMenuGroup[] = [];
+  for (const rawGroup of value) {
+    if (!rawGroup || typeof rawGroup !== 'object') continue;
+    const group = rawGroup as Record<string, unknown>;
+    if (typeof group.label !== 'string' || group.label.length > 200 || !Array.isArray(group.children)) continue;
+    const fallbackGroup = fallbackByLabel.get(group.label);
+    const children: AdminMenuItem[] = [];
+    for (const rawItem of group.children) {
+      if (!rawItem || typeof rawItem !== 'object') continue;
+      const item = rawItem as Record<string, unknown>;
+      if (typeof item.label !== 'string' || item.label.length > 200 || !isSafeAdminHref(item.href)) continue;
+      const fallbackItem = fallbackGroup?.children.find(child => child.href === item.href);
+      children.push({
+        label: item.label,
+        href: item.href,
+        active: item.active === true,
+        // A navigation filter may add links, but it cannot turn a core menu
+        // item hidden by the current user's permission into a visible one.
+        show: item.show !== false && fallbackItem?.show !== false,
+      });
+    }
+    if (children.length > 0) {
+      groups.push({
+        label: group.label,
+        show: group.show !== false && fallbackGroup?.show !== false,
+        children,
+      });
+    }
+  }
+  return groups;
+}
+
+// Determine which group is "focus" (has an active child)
+// Compute index among visible (filtered) groups to match the .map() idx
+const filteredMenuGroups = await applyFilterSafely(_pluginCtx, 'admin:nav', menuGroups, adminHookContext);
+const safeMenuGroups = normalizeMenuGroups(filteredMenuGroups, menuGroups);
+const visibleGroups = safeMenuGroups.filter(g => g.show);
+const focusGroupIdx = visibleGroups.findIndex(g => g.children.some(c => c.active));
+const adminHeadHtml = await applyFilterSafely(_pluginCtx, 'admin:head', '', adminHookContext);
+const adminFooterHtml = await applyFilterSafely(_pluginCtx, 'admin:footer', '', { ...adminHookContext, activeMenu, title });
+const flashError = user ? await readAdminFlash(Astro.request, options, user.uid, pageI18n) : null;
+if (flashError) Astro.response.headers.append('Set-Cookie', clearAdminFlash(Astro.request));
+await doHook(_pluginCtx, 'admin:end', { ...adminHookContext, menuGroups: safeMenuGroups });
+const adminClientMessageJson = safeJsonForScript({
+  selectFirst: t('admin.action.selectFirst', {}, 'Select an item first'),
+  confirmAction: t('admin.action.confirm', {}, 'Confirm this action?'),
+  return: t('admin.action.return', {}, 'Return'),
+});
+---
+<!DOCTYPE html>
+<html lang={documentLocale}>
+<head>
+  <meta charset={options.charset || 'UTF-8'} />
+  <meta name="renderer" content="webkit" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{`${title} - ${options.title} - ${t('admin.footer.poweredBy', {}, 'Powered by Typecho CF')}`}</title>
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="stylesheet" href="/css/normalize.css" />
+  <link rel="stylesheet" href="/css/grid.css" />
+  <link rel="stylesheet" href="/css/admin.css" />
+  {adminHeadHtml && <Fragment set:html={adminHeadHtml} />}
+  <slot name="head" />
+</head>
+<body>
+  <div class="typecho-head-nav clearfix" role="navigation">
+    <button class="menu-bar" type="button" aria-controls="typecho-nav-list" aria-expanded="false">{t('admin.action.menu', {}, 'Menu')}</button>
+    <nav id="typecho-nav-list">
+      {visibleGroups.map((group, idx) => {
+        const isFocus = idx === focusGroupIdx;
+        const visibleChildren = group.children.filter(c => c.show);
+        return (
+          <ul class:list={['root', { focus: isFocus }]}>
+            <li class="parent">
+              <a href={visibleChildren[0]?.href || '#'} aria-haspopup="menu" aria-expanded="false" aria-controls={`typecho-nav-group-${idx}`}>{group.label}</a>
+              <ul class="child" id={`typecho-nav-group-${idx}`} role="menu">
+                {visibleChildren.map(item => (
+                  <li class:list={[{ focus: item.active }]}>
+                    <a href={item.href}>{item.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          </ul>
+        );
+      })}
+    </nav>
+    <div class="operate">
+      <a href={`/admin/profile`} class="author">{user?.screenName || user?.name}</a>
+      <form method="post" action={urls.logoutUrl} class="logout-form">
+        <button type="submit" class="exit">{t('admin.action.logout', {}, 'Log out')}</button>
+      </form>
+      <a href={urls.siteUrl + '/'}>{t('admin.action.site', {}, 'Site')}</a>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="body container">
+      <div class="typecho-page-title">
+        <h2>{title}</h2>
+      </div>
+      <div class:list={['row', 'typecho-page-main', bodyClass]} role="main">
+        {flashError && (
+          <div class="col-mb-12 admin-notice admin-notice--error typecho-dismissible" role="alert">
+            <p>{flashError}</p>
+            <button type="button" class="typecho-notice-close" aria-label={t('admin.action.closeNotice', {}, 'Close notice')}>&times;</button>
+          </div>
+        )}
+        <slot />
+      </div>
+    </div>
+  </div>
+
+  <div class="typecho-foot" role="contentinfo">
+    <div class="copyright">
+      <p>&copy; {new Date().getFullYear()} <a href={urls.siteUrl}>{options.title}</a>.
+      {t('admin.footer.poweredBy', {}, 'Powered by Typecho CF')}.</p>
+    </div>
+  </div>
+
+  <script is:inline src="/vendor/jquery.js"></script>
+  <script is:inline src="/vendor/jquery-ui.js"></script>
+  <script is:inline src="/vendor/typecho.js"></script>
+  <script type="application/json" id="admin-client-messages" set:html={adminClientMessageJson}></script>
+  <script is:inline>
+    // Astro does not interpolate expressions inside `is:inline` scripts, so the
+    // bundle is read from the JSON script tag above. (Emitting `{...}` here made
+    // the browser throw `adminClientMessageJson is not defined`, which killed
+    // every handler in this file: nav, notices, select-all, dropdown actions.)
+    const adminClientMessages = JSON.parse(document.getElementById('admin-client-messages')?.textContent || '{}');
+    (function () {
+      $(document).ready(function() {
+        const ADMIN_SUCCESS_NOTICE_HIDE_DELAY_MS = 3000;
+        const adminNoticeTimers = new WeakMap();
+
+        function scheduleAdminNoticeClose(notice) {
+          if (!(notice instanceof HTMLElement)) return;
+          const isSuccessNotice = notice.classList.contains('admin-notice--success')
+            && notice.classList.contains('typecho-dismissible');
+          const existingTimer = adminNoticeTimers.get(notice);
+          if (!isSuccessNotice) {
+            if (existingTimer !== undefined) {
+              window.clearTimeout(existingTimer);
+              adminNoticeTimers.delete(notice);
+            }
+            return;
+          }
+          if (existingTimer !== undefined) return;
+          const timer = window.setTimeout(function () {
+            if (adminNoticeTimers.get(notice) !== timer) return;
+            adminNoticeTimers.delete(notice);
+            if (notice.parentNode
+              && notice.classList.contains('admin-notice--success')
+              && notice.classList.contains('typecho-dismissible')) {
+              notice.style.display = 'none';
+            }
+          }, ADMIN_SUCCESS_NOTICE_HIDE_DELAY_MS);
+          adminNoticeTimers.set(notice, timer);
+        }
+
+        function scheduleAdminNoticesInNode(node) {
+          if (!(node instanceof HTMLElement)) return;
+          scheduleAdminNoticeClose(node);
+          node.querySelectorAll('.admin-notice--success.typecho-dismissible').forEach(scheduleAdminNoticeClose);
+        }
+
+        document.querySelectorAll('.admin-notice--success.typecho-dismissible').forEach(scheduleAdminNoticeClose);
+        if (window.MutationObserver && document.body) {
+          const adminNoticeObserver = new MutationObserver(function (mutations) {
+            mutations.forEach(function (mutation) {
+              if (mutation.type === 'attributes') scheduleAdminNoticeClose(mutation.target);
+              mutation.addedNodes.forEach(scheduleAdminNoticesInNode);
+            });
+          });
+          adminNoticeObserver.observe(document.body, {
+            attributes: true,
+            attributeFilter: ['class'],
+            childList: true,
+            subtree: true,
+          });
+        }
+
+        if (window.history && window.history.replaceState) {
+          const currentUrl = new URL(window.location.href);
+          if (currentUrl.searchParams.get('saved') === '1') {
+            currentUrl.searchParams.delete('saved');
+            const query = currentUrl.searchParams.toString();
+            window.history.replaceState(window.history.state, document.title,
+              currentUrl.pathname + (query ? '?' + query : '') + currentUrl.hash);
+          }
+        }
+
+        // 导航菜单
+        const menuBar = $('.menu-bar').click(function () {
+          const nav = $(this).next('#typecho-nav-list');
+          const open = $(this).toggleClass('focus').hasClass('focus');
+          $(this).attr('aria-expanded', open ? 'true' : 'false');
+          if (!open) {
+            nav.removeClass('expanded noexpanded');
+          }
+        });
+
+        menuBar.on('keydown', function (e) {
+          if (e.key === 'Escape' && $(this).hasClass('focus')) {
+            e.preventDefault();
+            $(this).trigger('click').trigger('focus');
+          }
+        });
+
+        $('.main, .typecho-foot').on('click touchstart', function () {
+          if (menuBar.hasClass('focus')) {
+            menuBar.trigger('click');
+          }
+        });
+
+        $(document).on('keydown', function (e) {
+          if (e.key === 'Escape' && menuBar.hasClass('focus')) {
+            e.preventDefault();
+            menuBar.trigger('click').trigger('focus');
+          }
+        });
+
+        $('.main').on('click', '.typecho-notice-close', function () {
+          $(this).closest('.typecho-dismissible').remove();
+        });
+
+        $('#typecho-nav-list ul.root').each(function () {
+          const ul = $(this), nav = ul.parent();
+          const trigger = ul.find('.parent > a').first();
+          let focused = false;
+
+          function setGroupExpanded(open) {
+            ul.toggleClass('expanded', open);
+            trigger.attr('aria-expanded', open ? 'true' : 'false');
+          }
+
+          ul.on('click touchend', '.parent a', function (e) {
+            nav.removeClass('noexpanded').addClass('expanded');
+            setGroupExpanded(true);
+            if ($(window).width() < 576 && e.type == 'click') {
+              return false;
+            }
+          }).find('.child')
+          .append($('<li class="return"><a>' + adminClientMessages.return + '</a></li>').click(function () {
+            nav.removeClass('expanded').addClass('noexpanded');
+            return false;
+          }));
+
+          trigger.on('keydown', function (e) {
+            if (e.key === ' ' || e.key === 'Spacebar') {
+              e.preventDefault();
+              setGroupExpanded(true);
+              ul.find('.child a').first().trigger('focus');
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setGroupExpanded(false);
+              trigger.trigger('focus');
+            }
+          });
+
+          ul.find('.child').on('keydown', 'a', function (e) {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              setGroupExpanded(false);
+              trigger.trigger('focus');
+            }
+          });
+
+          $('a', ul).focus(function () {
+            setGroupExpanded(true);
+            focused = true;
+          }).blur(function () {
+            focused = false;
+            setTimeout(function () {
+              if (!focused) {
+                setGroupExpanded(false);
+              }
+            });
+          });
+        });
+
+        // 表格全选 - 在 .typecho-list 范围内查找所有 checkbox（同步整行高亮）
+        $('.typecho-table-select-all').click(function () {
+          var scope = $(this).closest('.typecho-list, form.operate-form');
+          var boxes = $('input[type=checkbox]', scope).not('.typecho-table-select-all').not(':disabled');
+          boxes.prop('checked', this.checked);
+          boxes.closest('tr').toggleClass('checked', this.checked);
+        });
+
+        // 点击整行即可勾选/取消：勾选列在窄屏被隐藏时，批量选择依然可用
+        $('.typecho-list-table tbody').on('click', 'tr', function (e) {
+          var target = $(e.target);
+          if (target.closest('a, button, input, select, textarea, label').length) return;
+          var box = $(this).find('input[type=checkbox][name]').not('.typecho-table-select-all').first();
+          if (!box.length) return;
+          box.prop('checked', !box.prop('checked'));
+          $(this).toggleClass('checked', box.prop('checked'));
+        });
+
+        // 下拉菜单显示/隐藏
+        $('.dropdown-toggle').each(function (index) {
+          var toggle = $(this);
+          var menu = toggle.next('.dropdown-menu');
+          var menuId = menu.attr('id') || ('typecho-dropdown-' + index);
+          menu.attr({ id: menuId, role: 'menu' });
+          toggle.attr({ 'aria-haspopup': 'menu', 'aria-controls': menuId, 'aria-expanded': 'false' });
+        }).click(function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var menu = $(this).next('.dropdown-menu');
+          // 关闭其他打开的菜单
+          $('.dropdown-menu').not(menu).hide().prev('.dropdown-toggle').attr('aria-expanded', 'false');
+          var open = !menu.is(':visible');
+          menu.toggle(open);
+          $(this).attr('aria-expanded', open ? 'true' : 'false');
+          return false;
+        }).on('keydown', function (e) {
+          if (e.key === 'Escape' && $(this).attr('aria-expanded') === 'true') {
+            e.preventDefault();
+            $(this).next('.dropdown-menu').hide();
+            $(this).attr('aria-expanded', 'false').trigger('focus');
+          }
+        });
+
+        // 点击其他区域关闭下拉菜单（点击下拉容器内部不关闭，避免刚打开就被收起）
+        $(document).click(function (e) {
+          if ($(e.target).closest('.btn-drop').length) return;
+          $('.dropdown-menu').hide().prev('.dropdown-toggle').attr('aria-expanded', 'false');
+        }).on('keydown', '.dropdown-menu a', function (e) {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            var menu = $(this).closest('.dropdown-menu').hide();
+            menu.prev('.dropdown-toggle').attr('aria-expanded', 'false').trigger('focus');
+          }
+        });
+
+        // 批量操作 - dropdown-menu 链接
+        $('.dropdown-menu a[href*="/api/admin/"]').click(function (e) {
+          e.preventDefault();
+          var href = $(this).attr('href');
+          // 在 .typecho-list 范围内查找 operate-form
+          var list = $(this).closest('.typecho-list');
+          // Prefer the named main content form; fall back to any operate-form
+          var form = list.find('form.operate-form[name]');
+          if (!form.length) form = list.find('form.operate-form').first();
+          if (!form.length) form = $(this).closest('form.operate-form');
+          if (!form.length) return;
+
+          var checked = form.find('input[type=checkbox]:checked').not('.typecho-table-select-all');
+          if (checked.length === 0) {
+            alert(adminClientMessages.selectFirst);
+            return;
+          }
+
+          // Confirm delete actions
+          if (href.indexOf('delete') >= 0) {
+            if (!confirm(adminClientMessages.confirmAction)) return;
+          }
+
+          form.attr('action', href);
+          form.submit();
+        });
+
+        // 表单提交防重复（不 disable 按钮，否则被点击按钮的 name/value 不会随表单提交）
+        // A preview is submitted to a new tab and leaves the editor in place,
+        // so it must not lock the current form as if a save had completed.
+        $('.main form').submit(function (e) {
+          var submitter = e.originalEvent && e.originalEvent.submitter;
+          if (!submitter && document.activeElement && document.activeElement.form === this) {
+            submitter = document.activeElement;
+          }
+          if (submitter && (submitter.formTarget === '_blank'
+            || $(submitter).attr('formtarget') === '_blank')) return;
+          if ($(this).data('submitted')) return false;
+          $(this).data('submitted', true);
+        });
+        // 清除 bfcache 恢复时残留的 submitted 标记，否则后退回来表单无法再次提交
+        $(window).on('pageshow', function () {
+          $('.main form').removeData('submitted');
+        });
+
+        // 外部链接新窗口打开
+        if ($('.typecho-login').length == 0) {
+          $('a').each(function () {
+            var t = $(this), href = t.attr('href');
+            if (href && href[0] == '#') return;
+            if (href && (href.indexOf('/admin') >= 0 || href.indexOf('/api') >= 0)) return;
+            if (href && href.indexOf('://') > 0) {
+              t.attr('target', '_blank').attr('rel', 'noopener noreferrer');
+            }
+          });
+        }
+      });
+    })();
+  </script>
+
+  <slot name="footer" />
+  {adminFooterHtml && <Fragment set:html={adminFooterHtml} />}
+</body>
+</html>

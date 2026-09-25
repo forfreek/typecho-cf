@@ -1,0 +1,97 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { options, urls, user, csrfToken } = ctx;
+---
+<Admin title={ctx.i18n.t('admin.page.readingOptions', {}, 'Reading settings')} options={options} urls={urls} user={user} activeMenu="options-reading" pluginCtx={ctx}>
+  <div class="col-mb-12 col-tb-8 col-tb-offset-2" role="form">
+    <form method="post" action="/api/admin/options">
+      <input type="hidden" name="_" value={csrfToken} />
+      <ul class="typecho-option">
+        <li>
+          <label for="postDateFormat" class="typecho-label">{ctx.i18n.t('admin.field.postDateFormat', {}, 'Post date format')}</label>
+          <p><input type="text" id="postDateFormat" name="postDateFormat" class="text w-100 mono"
+            value={options.postDateFormat || 'Y-m-d'} /></p>
+          <p class="description">{ctx.i18n.t('admin.description.postDateFormat', {}, 'Format used for dates in post lists. Uses PHP date syntax.')}</p>
+        </li>
+        <li>
+          <label for="commentDateFormat" class="typecho-label">{ctx.i18n.t('admin.field.commentDateFormat', {}, 'Comment date format')}</label>
+          <p><input type="text" id="commentDateFormat" name="commentDateFormat" class="text w-100 mono"
+            value={options.commentDateFormat || 'F jS, Y'} /></p>
+          <p class="description">{ctx.i18n.t('admin.description.commentDateFormat', {}, 'Format used for dates in comment lists.')}</p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label">{ctx.i18n.t('admin.field.articleList', {}, 'Post list')}</label>
+          <p>
+            {ctx.i18n.t('admin.description.pageSize', {}, 'Number of posts shown on each page.')}
+            <input type="text" id="pageSize" name="pageSize" class="text-s mono admin-width-40"
+              value={options.pageSize || '5'} />
+            {ctx.i18n.t('admin.unit.articles', {}, 'posts')}
+          </p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label">{ctx.i18n.t('admin.field.feed', {}, 'Feed')}</label>
+          <ul>
+            <li>
+              <input type="checkbox" id="feedFullText" name="feedFullText" value="1"
+                checked={!!options.feedFullText} />
+              <label for="feedFullText">{ctx.i18n.t('admin.description.feedFullText', {}, 'Output full content in feeds; otherwise output excerpts.')}</label>
+            </li>
+          </ul>
+          <p>
+            {ctx.i18n.t('admin.field.feedItems', {}, 'Feed items')}
+            <input type="text" id="postsListSize" name="postsListSize" class="text-s mono admin-width-40"
+              value={options.postsListSize || '10'} />
+            {ctx.i18n.t('admin.unit.articles', {}, 'posts')}
+          </p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label">{ctx.i18n.t('admin.field.otherSettings', {}, 'Other settings')}</label>
+          <ul>
+            <li>
+              <input type="checkbox" id="markdown" name="markdown" value="1"
+                checked={!!options.markdown} />
+              <label for="markdown">{ctx.i18n.t('admin.description.markdown', {}, 'Use Markdown syntax for posts.')}</label>
+            </li>
+          </ul>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label for="editorSize" class="typecho-label">{ctx.i18n.t('admin.field.editorSize', {}, 'Editor height')}</label>
+          <p>
+            <input type="text" id="editorSize" name="editorSize" class="text-s mono admin-width-60"
+              value={String(options.editorSize || 350)} /> {ctx.i18n.t('admin.unit.pixels', {}, 'pixels')}
+          </p>
+          <p class="description">{ctx.i18n.t('admin.description.editorSize', {}, 'Default editor height. Recommended range: 200–800.')}</p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option typecho-option-submit">
+        <li>
+          <button type="submit" class="btn primary">{ctx.i18n.t('admin.action.save', {}, 'Save settings')}</button>
+        </li>
+      </ul>
+    </form>
+  </div>
+</Admin>

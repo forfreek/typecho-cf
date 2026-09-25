@@ -1,0 +1,94 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { options, urls, user, csrfToken } = ctx;
+
+// Typecho post permalink patterns
+const postPatterns = [
+  { value: '/archives/{cid}/', labelKey: 'admin.permalink.defaultStyle', example: '/archives/1/' },
+  { value: '/archives/{slug}.html', labelKey: 'admin.permalink.filenameStyle', example: '/archives/hello-world.html' },
+  { value: '/{year}/{month}/{day}/{slug}.html', labelKey: 'admin.permalink.dateFilenameStyle', example: '/2026/03/23/hello-world.html' },
+  { value: '/{category}/{slug}.html', labelKey: 'admin.permalink.categoryFilenameStyle', example: '/coding/hello-world.html' },
+];
+
+const currentPostPattern = options.permalinkPattern || '/archives/{cid}/';
+const isCustomPost = !postPatterns.some(p => p.value === currentPostPattern);
+
+const currentPagePattern = (options.pagePattern as string) || '/{slug}';
+const currentCategoryPattern = (options.categoryPattern as string) || '/category/{slug}/';
+---
+<Admin title={ctx.i18n.t('admin.page.permalinkOptions', {}, 'Permalink settings')} options={options} urls={urls} user={user} activeMenu="options-permalink" pluginCtx={ctx}>
+  <div class="col-mb-12 col-tb-8 col-tb-offset-2" role="form">
+    <form method="post" action="/api/admin/options">
+      <input type="hidden" name="_" value={csrfToken} />
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label">{ctx.i18n.t('admin.field.customPostPath', {}, 'Custom post path')}</label>
+          <div>
+            {postPatterns.map((p) => (
+              <p>
+                <input type="radio" name="permalinkPattern" value={p.value}
+                  id={`post-pattern-${p.value}`}
+                  checked={currentPostPattern === p.value} />
+                <label for={`post-pattern-${p.value}`}>
+                  {ctx.i18n.t(p.labelKey, {}, p.labelKey)}: <code>{p.example}</code>
+                </label>
+              </p>
+            ))}
+            <p>
+              <input type="radio" name="permalinkPattern" value="custom"
+                id="post-pattern-custom"
+                checked={isCustomPost} />
+              <label for="post-pattern-custom">{ctx.i18n.t('admin.permalink.custom', {}, 'Custom')}:</label>
+              <input type="text" name="customPattern" class="text mono admin-width-300"
+                value={isCustomPost ? currentPostPattern : ''} />
+            </p>
+          </div>
+          <p class="description">
+            {ctx.i18n.t('admin.permalink.variables', {}, 'Available variables:')} <code>{'{cid}'}</code> {ctx.i18n.t('admin.permalink.articleId', {}, 'post ID')}, <code>{'{slug}'}</code> {ctx.i18n.t('admin.field.slug', {}, 'slug')},
+            <code>{'{category}'}</code> {ctx.i18n.t('admin.permalink.category', {}, 'category')}, <code>{'{year}'}</code> {ctx.i18n.t('admin.permalink.year', {}, 'year')},
+            <code>{'{month}'}</code> {ctx.i18n.t('admin.permalink.month', {}, 'month')}, <code>{'{day}'}</code> {ctx.i18n.t('admin.permalink.day', {}, 'day')}
+          </p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label" for="pagePattern">{ctx.i18n.t('admin.field.pagePath', {}, 'Page path')}</label>
+          <input type="text" name="pagePattern" id="pagePattern" class="text mono admin-width-300"
+            value={currentPagePattern} />
+          <p class="description">
+            {ctx.i18n.t('admin.permalink.variables', {}, 'Available variables:')} <code>{'{slug}'}</code> {ctx.i18n.t('admin.field.slug', {}, 'slug')}, <code>{'{cid}'}</code> {ctx.i18n.t('admin.permalink.pageId', {}, 'page ID')}
+          </p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label" for="categoryPattern">{ctx.i18n.t('admin.field.categoryPath', {}, 'Category path')}</label>
+          <input type="text" name="categoryPattern" id="categoryPattern" class="text mono admin-width-300"
+            value={currentCategoryPattern} />
+          <p class="description">
+            {ctx.i18n.t('admin.permalink.variables', {}, 'Available variables:')} <code>{'{slug}'}</code> {ctx.i18n.t('admin.field.slug', {}, 'slug')}, <code>{'{mid}'}</code> {ctx.i18n.t('admin.permalink.categoryId', {}, 'category ID')}
+          </p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option typecho-option-submit">
+        <li>
+          <button type="submit" class="btn primary">{ctx.i18n.t('admin.action.save', {}, 'Save settings')}</button>
+        </li>
+      </ul>
+    </form>
+  </div>
+</Admin>

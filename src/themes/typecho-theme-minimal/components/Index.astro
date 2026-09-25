@@ -1,0 +1,181 @@
+---
+/**
+ * Default theme — Index (home page) component
+ *
+ * Renders the blog post list with pagination.
+ * Equivalent to the original index.astro template section.
+ */
+import Base from '@/layouts/Base.astro';
+import type { ThemeIndexProps } from '@/lib/theme-props';
+import { formatDate, buildAuthorLink, buildCategoryLink } from '@/lib/content';
+
+type Props = ThemeIndexProps;
+
+const {
+  options, urls, user, isLoggedIn, pages, sidebarData, currentPath, pluginCtx,
+  i18n,
+  posts, pagination,
+} = Astro.props;
+
+const t = i18n.t.bind(i18n);
+const isIndex = currentPath === '/';
+---
+<Base options={options} urls={urls} user={user} isLoggedIn={isLoggedIn} pluginCtx={pluginCtx} i18n={i18n}>
+  <header id="header" class="clearfix">
+    <div class="container">
+      <div class="row">
+        <div class="site-name col-mb-12 col-9">
+          <a id="logo" href={urls.siteUrl + '/'}>{options.title}</a>
+          <p class="description">{options.description}</p>
+        </div>
+        <div class="site-search col-3 kit-hidden-tb">
+          <form id="search" method="post" action={urls.siteUrl + '/'} role="search">
+            <label for="s" class="sr-only">{t('theme.search.label', {}, 'Search keywords')}</label>
+            <input type="text" id="s" name="s" class="text" placeholder={t('theme.search.placeholder', {}, 'Search keywords')} />
+            <button type="submit" class="submit">{t('theme.search.submit', {}, 'Search')}</button>
+          </form>
+        </div>
+        <div class="col-mb-12">
+          <nav id="nav-menu" class="clearfix" role="navigation">
+            <a class:list={[{ current: isIndex }]} href={urls.siteUrl + '/'}>{t('theme.nav.home', {}, 'Home')}</a>
+            {pages.map((page) => (
+              <a href={page.permalink} title={page.title}>{page.title}</a>
+            ))}
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="body">
+    <div class="container">
+      <div class="row">
+        <div class="col-mb-12 col-8" id="main" role="main">
+          {posts.length === 0 ? (
+            <article class="post">
+              <h2 class="post-title">{t('theme.empty.postsTitle', {}, 'No posts yet')}</h2>
+              <div class="post-content">
+                <p>{t('theme.empty.postsDescription', {}, 'There are no posts yet. Publish the first post from the admin panel.')}</p>
+              </div>
+            </article>
+          ) : (
+            posts.map((post) => (
+              <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+                <h2 class="post-title" itemprop="name headline">
+                  <a itemprop="url" href={post.permalink}>{post.title}</a>
+                </h2>
+                <ul class="post-meta">
+                  <li itemprop="author" itemscope itemtype="http://schema.org/Person">
+                    {t('theme.meta.author', {}, 'Author:')} <a
+                      itemprop="name"
+                      href={post.author ? buildAuthorLink(post.author.uid, urls.siteUrl) : '#'}
+                      rel="author"
+                    >
+                      {post.author?.screenName || post.author?.name || t('theme.unknown', {}, 'Unknown')}
+                    </a>
+                  </li>
+                  <li>
+                    {t('theme.meta.time', {}, 'Date:')} <time datetime={new Date((post.created) * 1000).toISOString()} itemprop="datePublished">
+                      {formatDate(post.created, 'Y-m-d', options.timezone, i18n.locale)}
+                    </time>
+                  </li>
+                  {post.categories.length > 0 && (
+                    <li>
+                      {t('theme.meta.category', {}, 'Category:')} {post.categories.map((c, i) => (
+                        <>{i > 0 && ', '}<a href={c.permalink}>{c.name}</a></>
+                      ))}
+                    </li>
+                  )}
+                  <li itemprop="interactionCount">
+                    <a itemprop="discussionUrl" href={`${post.permalink}#comments`}>
+                      {post.commentsNum === 0 ? t('theme.comments.label', {}, 'Comments') : i18n.tPlural('theme.comments.count', post.commentsNum, {}, '{count} comments')}
+                    </a>
+                  </li>
+                </ul>
+                <div class="post-content" itemprop="articleBody" set:html={post.excerpt} />
+              </article>
+            ))
+          )}
+
+          {pagination.totalPages > 1 && (
+            <nav class="page-navigator">
+              {pagination.hasPrev && (
+                <a class="prev" href={pagination.prevUrl!}>&laquo; {t('theme.comments.previous', {}, 'Previous')}</a>
+              )}
+              {pagination.hasNext && (
+                <a class="next" href={pagination.nextUrl!}>{t('theme.comments.next', {}, 'Next')} &raquo;</a>
+              )}
+            </nav>
+          )}
+        </div>
+
+        {sidebarData && (
+          <div class="col-mb-12 col-offset-1 col-3 kit-hidden-tb" id="secondary" role="complementary">
+            {sidebarData.recentPosts && sidebarData.recentPosts.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.recentPosts', {}, 'Recent posts')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.recentPosts.map((p) => (
+                    <li><a href={p.permalink}>{p.title}</a></li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {sidebarData.recentComments && sidebarData.recentComments.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.recentComments', {}, 'Recent comments')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.recentComments.map((c) => (
+                    <li><a href={c.permalink}>{c.author}</a>: {c.excerpt}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {sidebarData.categories && sidebarData.categories.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.categories', {}, 'Categories')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.categories.map((cat) => (
+                    <li><a href={cat.permalink}>{cat.name} ({cat.count})</a></li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {sidebarData.archives && sidebarData.archives.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.archives', {}, 'Archives')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.archives.map((archive) => (
+                    <li><a href={archive.permalink}>{archive.date}</a></li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            <section class="widget">
+              <h3 class="widget-title">{t('theme.sidebar.other', {}, 'Other')}</h3>
+              <ul class="widget-list">
+                {isLoggedIn ? (
+                  <>
+                    <li class="last">
+                      <a href={urls.adminUrl}>{t('theme.sidebar.admin', {}, 'Go to admin')} ({user?.screenName || user?.name})</a>
+                    </li>
+                    <li><form method="post" action={urls.logoutUrl} class="logout-form"><button type="submit">{t('theme.sidebar.logout', {}, 'Log out')}</button></form></li>
+                  </>
+                ) : (
+                  <li class="last"><a href={urls.loginUrl}>{t('theme.sidebar.login', {}, 'Log in')}</a></li>
+                )}
+                <li><a href={urls.feedUrl}>{t('theme.sidebar.postsRss', {}, 'Posts RSS')}</a></li>
+                <li><a href={urls.commentsFeedUrl}>{t('theme.sidebar.commentsRss', {}, 'Comments RSS')}</a></li>
+              </ul>
+            </section>
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+
+  <footer id="footer" role="contentinfo">
+    &copy; {new Date().getFullYear()} <a href={urls.siteUrl}>{options.title}</a>.
+    {t('theme.footer.poweredBy', {}, 'Powered by')} <a href="https://github.com/eslizn/typecho-cf">Typecho CF</a>{t('theme.footer.poweredBySuffix', {}, '')}.
+  </footer>
+</Base>

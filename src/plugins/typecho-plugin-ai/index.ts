@@ -1,0 +1,230 @@
+import {
+  parsePluginOption,
+  resolveCapability,
+} from 'typecho/plugin-sdk';
+import type {
+  CapabilityRuntimeContext,
+  I18n,
+  PluginInitContext,
+  PluginRouteClaim,
+  PluginRouteResult,
+} from 'typecho/plugin-sdk';
+import { AI_ERROR_CODES } from './errors';
+import { createAiChatService } from './chat';
+import {
+  handleAiHttpRequest,
+  isAiHttpEndpointPath,
+  isAiHttpRoutePath,
+  openAiErrorResponse,
+} from './http';
+import {
+  AiConfigValidationError,
+  isValidHttpBasePath,
+  listChatModelOptions,
+  normalizeAiConfig,
+  validateAiConfig,
+  validateAiConfigLocally,
+} from './provider';
+import {
+  AI_CAPABILITIES,
+  AI_CONFIG_FIELDS,
+  AI_MODEL_CATALOG_CAPABILITY,
+  AI_PLUGIN_ID,
+  type AiConfig,
+  type AiModelCatalogService,
+} from './types';
+import en from './locales/en.json';
+import zhCN from './locales/zh-CN.json';
+
+export { createAiChatService, validateChatRequest } from './chat';
+export {
+  handleAiHttpRequest,
+  isAiHttpEndpointPath,
+  isAiHttpRoutePath,
+  openAiErrorResponse,
+  parseChatRequest,
+} from './http';
+export {
+  AI_REQUEST_LIMITS,
+  AI_VALIDATION_LIMITS,
+  buildProviderEndpoint,
+  isValidHttpBasePath,
+  isReservedHttpBasePath,
+  listChatModelOptions,
+  listChatModels,
+  logicalModelName,
+  normalizeAiConfig,
+  normalizeBasePath,
+  normalizeBaseUrl,
+  selectAiModel,
+  supportsRequestModalities,
+  validateAiConfig,
+  validateAiConfigLocally,
+} from './provider';
+export type { AiRequestLimits, AiValidationLimits } from './provider';
+export { AI_ERROR_CODES, AiCapabilityError, isAiCapabilityError } from './errors';
+export * from './types';
+
+const HTTP_V1_PREFIX = '/v1';
+
+interface AiConfigValidationResult {
+  success?: boolean;
+  settings?: Record<string, unknown>;
+  error?: string;
+}
+
+interface AiConfigSaveExtra {
+  pluginId?: string;
+  settings?: Record<string, unknown>;
+  i18n?: I18n;
+}
+
+interface AiRouteExtra {
+  request?: Request;
+  path?: string;
+  options?: Record<string, unknown>;
+  capabilityRuntime?: CapabilityRuntimeContext;
+}
+
+function configuredRouteClaims(config: Readonly<Record<string, unknown>>): ReadonlyArray<PluginRouteClaim> {
+  const normalized = normalizeAiConfig(config);
+  if (!normalized.http.enabled || !isValidHttpBasePath(normalized.http.basePath)) return [];
+  return [{ path: normalized.http.basePath, match: 'prefix' }];
+}
+
+function configValidationError(error: unknown, i18n?: I18n): string {
+  if (error instanceof AiConfigValidationError) {
+    return i18n?.t(`plugin.${AI_PLUGIN_ID}.error.${error.code}`, error.params, error.message) ?? error.message;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return 'AI configuration validation failed.';
+}
+
+interface AiServiceResolution {
+  service: ReturnType<typeof createAiChatService> | null;
+  /** Why the capability could not be resolved; reported to authenticated callers. */
+  reason: string;
+}
+
+function resolveRuntimeService(
+  runtime: CapabilityRuntimeContext | undefined,
+  pluginId: string,
+): AiServiceResolution {
+  if (!runtime) return { service: null, reason: 'unavailable' };
+  const resolved = resolveCapability<ReturnType<typeof createAiChatService>>(runtime, {
+    capability: AI_CAPABILITIES.chatGenerate,
+    ownerPluginId: pluginId,
+  });
+  return resolved.ok ? { service: resolved.value, reason: 'ok' } : { service: null, reason: resolved.reason };
+}
+
+function routeConfig(options: Record<string, unknown> | undefined, pluginId: string): AiConfig {
+  return normalizeAiConfig(parsePluginOption(options?.[`plugin:${pluginId}`]));
+}
+
+export default function init({
+  addHook,
+  pluginId,
+  registerCapability,
+  registerRouteResolver,
+  registerTranslations,
+}: PluginInitContext): void {
+  if (!registerCapability) {
+    throw new Error('The Typecho runtime does not provide generic capability registration.');
+  }
+
+  registerTranslations?.('en', en);
+  registerTranslations?.('zh-CN', zhCN);
+
+  registerCapability({
+    capability: AI_CAPABILITIES.chatGenerate,
+    version: 1,
+    factory: runtime => createAiChatService(
+      runtime,
+      normalizeAiConfig(runtime.getOwnPluginConfig()),
+    ),
+  });
+
+  // The catalog is published as a capability so other plugins can offer a
+  // model dropdown without depending on this package or reading its config.
+  registerCapability<AiModelCatalogService>({
+    capability: AI_MODEL_CATALOG_CAPABILITY,
+    version: 1,
+    factory: runtime => ({
+      listOptions: () => listChatModelOptions(normalizeAiConfig(runtime.getOwnPluginConfig())),
+    }),
+  });
+
+  registerRouteResolver(({ config }) => configuredRouteClaims(config));
+
+  addHook(
+    'plugin:config:beforeSave',
+    pluginId,
+    async (
+      result: AiConfigValidationResult,
+      extra?: AiConfigSaveExtra,
+    ): Promise<AiConfigValidationResult> => {
+      if (extra?.pluginId !== pluginId) return result;
+      try {
+        const normalized = normalizeAiConfig(extra.settings || {});
+        validateAiConfigLocally(normalized);
+        await validateAiConfig(normalized);
+        return { success: true, settings: normalized as unknown as Record<string, unknown> };
+      } catch (error) {
+        return { success: false, error: configValidationError(error, extra?.i18n) };
+      }
+    },
+  );
+
+  addHook(
+    'request:route',
+    pluginId,
+    async (
+      result: PluginRouteResult,
+      extra?: AiRouteExtra,
+    ): Promise<PluginRouteResult> => {
+      if (result?.handled || !extra?.request || !extra.path) return result;
+      const config = routeConfig(extra.options, pluginId);
+      if (!config.http.enabled || !isValidHttpBasePath(config.http.basePath)) return result;
+      // The configured base path is an owned HTTP surface. Only supported
+      // endpoints resolve the chat capability; unknown paths are still
+      // answered by the AI handler with an OpenAI-compatible 404.
+      if (!isAiHttpRoutePath(config, extra.path)) return result;
+
+      if (!isAiHttpEndpointPath(config, extra.path)) {
+        const response = await handleAiHttpRequest({
+          request: extra.request,
+          path: extra.path,
+          config,
+        });
+        return response ? { handled: true, response } : result;
+      }
+
+      const { service, reason } = resolveRuntimeService(extra.capabilityRuntime, pluginId);
+      if (!service) {
+        console.error({ event: 'ai_http_capability_unavailable', reason, path: extra.path });
+        // An authenticated caller gets the concrete resolution failure so the
+        // surface is diagnosable; an anonymous probe only learns that the
+        // endpoint cannot answer.
+        const authorized = extra.request.headers.has('authorization');
+        const response = openAiErrorResponse(
+          'The AI capability is unavailable.',
+          'server_error',
+          authorized ? reason : AI_ERROR_CODES.noAvailableModel,
+          503,
+        );
+        return { handled: true, response };
+      }
+      const response = await handleAiHttpRequest({
+        request: extra.request,
+        path: extra.path,
+        config,
+        service,
+      });
+      return response ? { handled: true, response } : result;
+    },
+    10,
+  );
+}
+
+export { AI_CAPABILITIES, AI_CONFIG_FIELDS, AI_MODEL_CATALOG_CAPABILITY, AI_PLUGIN_ID, HTTP_V1_PREFIX };

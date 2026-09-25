@@ -1,0 +1,24 @@
+---
+import { themeTemplates } from 'virtual:theme-templates';
+import { createContext } from '@/lib/context';
+import { prepareSearchData } from '@/lib/page-data';
+
+const { keywords } = Astro.params;
+// Astro already percent-decodes route params (repeatedly, until the value
+// stops changing), so a second decodeURIComponent both double-decodes and
+// throws URIError for inputs like "/search/50%25/" — surfacing as a 500 on a
+// public route.
+const searchKeywords = (keywords || '').trim();
+if (!searchKeywords) return Astro.redirect('/');
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const { options } = ctx;
+
+const result = await prepareSearchData(ctx, searchKeywords, Astro.request.url, Astro.locals, Astro.url);
+
+const activeTheme = options.theme || 'typecho-theme-minimal';
+const templates = themeTemplates[activeTheme] ?? {};
+const defaultTemplates = themeTemplates['typecho-theme-minimal']!;
+const ArchiveComponent = templates.Archive ?? defaultTemplates.Archive!;
+---
+<ArchiveComponent {...result} />

@@ -1,0 +1,61 @@
+---
+/**
+ * Theme Configuration Page
+ * Equivalent to PHP Typecho's options-theme.php
+ *
+ * Loads the theme manifest's config definition and renders the shared
+ * ConfigForm component. URL: /admin/theme-config?id=<themeId>
+ */
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+import { getTheme, themeHasConfig } from '@/lib/theme';
+import { createThemeI18n } from '@/lib/theme';
+import { getThemeConfigurationView } from '@/lib/theme-config';
+import ConfigForm from '@/components/admin/ConfigForm.astro';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { options, urls, user, csrfToken } = ctx;
+
+// Get theme ID from query string
+const themeId = Astro.url.searchParams.get('id') || '';
+const theme = getTheme(themeId);
+
+// Validate
+if (!theme || !themeHasConfig(themeId)) {
+  return Astro.redirect('/admin/themes');
+}
+
+const manifest = theme.manifest;
+const configuration = getThemeConfigurationView(options, themeId);
+const configDef = configuration.fields;
+const configValues = configuration.values;
+const themeI18n = createThemeI18n(themeId, ctx.i18n, ctx.activatedPlugins);
+const message = Astro.url.searchParams.get('saved') === '1'
+  ? ctx.i18n.t('admin.config.themeSaved', {}, 'Theme settings saved')
+  : '';
+
+const pageTitle = ctx.i18n.t('admin.config.themeTitle', { name: manifest.name || themeId }, `Theme settings: ${manifest.name || themeId}`);
+---
+<Admin title={pageTitle} options={options} urls={urls} user={user} activeMenu="themes" pluginCtx={ctx}>
+  <ConfigForm
+    action="/api/admin/theme-config"
+    csrfToken={csrfToken}
+    entityName="theme"
+    entityId={themeId}
+    configDef={configDef}
+    configValues={configValues}
+    message={message}
+    backHref="/admin/themes"
+    backLabel={ctx.i18n.t('admin.config.backThemes', {}, 'Back to themes')}
+    i18n={themeI18n}
+    optionSourceRuntime={ctx.capabilityRuntime}
+  />
+</Admin>

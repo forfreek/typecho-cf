@@ -1,0 +1,72 @@
+# AI (typecho-plugin-ai)
+
+Typecho-CF 的 AI 能力插件：把多个 OpenAI 兼容 Provider/模型收敛成通用的对话能力，另提供一个可选的 OpenAI 兼容 HTTP 端点。
+
+## Capability
+
+| Capability | 版本 | 说明 |
+|------------|------|------|
+| `ai.chat.generate` | 1 | 对话生成。请求/响应类型见 `types.ts`，实现由 `createAiChatService()` 提供；可选 `onProgress` 回调会报告阶段、TTFT、输入/输出 Token、速率和估算标记 |
+| `ai.models.list` | 1 | 发布可选的对话模型清单：**只包含已设置 `alias`**、已启用、支持文本对话且 `baseUrl` 为公网 HTTPS 的模型；按别名跨 Provider 合并去重。服务实现 `listOptions(): Array<{ value, label? }>` |
+
+`ai.image.generate`、`ai.audio.speech.generate`、`ai.audio.transcribe`、`ai.embeddings.create` 是预留 ID，不代表已有实现。
+
+消费方（例如 Scribe）只依赖上述能力契约：不 import 本插件，也不直接读取 `plugin:typecho-plugin-ai` 配置。
+
+## 配置
+
+- `providers[].baseUrl` 必须是公网 HTTPS（拒绝 IP 字面量、私网域名，以及带凭据、查询串或片段的 URL）
+- `providers[].models[].alias` 决定公开名：设置别名后**上游模型名不再被接受**；未设置别名的模型不会出现在 `ai.models.list`，也不会出现在 `GET {basePath}/v1/models`
+- 保存配置时会对启用模型做 `/models` 校验（并行、有超时与总预算上限，失败会阻止保存）
+- `http.*` 控制下面这个可选的 HTTP 兼容端点
+
+## HTTP 兼容端点（可选）
+
+启用后（`http.enabled` 开启，路径由 `http.basePath` 决定，默认 `/ai`）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `{basePath}/v1/models` | 列出已发布的模型别名 |
+| POST | `{basePath}/v1/chat/completions` | OpenAI 兼容对话，支持 `stream: true`（SSE） |
+
+- 鉴权：`Authorization: Bearer <token>`，token 在插件配置页生成（16–128 位 `A-Za-z0-9_-`，最多 20 个）
+- **token 列表为空时端点一律不可达**（返回 401）：删除全部 token 即关闭外部访问
+- 签名比较使用常量时间实现，并遍历完全部 token 后才给出结果，不泄漏匹配位置
+- 配置的 `basePath` 本身及其所有子路径都由 AI 插件接管；目前只有上表两个成功接口，其他路径返回 OpenAI 风格 JSON 404，不会落到核心 HTML 404
+- 成功接口路径带尾斜杠仍不匹配；例如 `/v1/models/` 会由插件返回 `endpoint_not_found`
+- 中间件对携带 `Authorization` 的请求禁用边缘缓存（读与写都跳过），避免缓存绕过 Bearer 鉴权
+- capability 解析失败时返回 503：带 `Authorization` 的调用方会拿到具体原因（`unavailable` / `ambiguous` / `version-mismatch` / `factory-failed`），匿名探测只拿到笼统错误码；同时输出 `ai_http_capability_unavailable` 结构化日志
+
+### 已知限制（有意为之）
+
+- 失败鉴权的计数窗口与「同时进行的生成数」上限（4）都是 **isolate 内存级**，不跨 PoP/isolate 共享；只有核心登录限流走 D1（`typecho_login_failures`）。Bearer token 熵足够高，这里的内存级限制只用于抬高爆破成本与保护本 isolate 的上游预算，不作为强安全边界
+- 流式响应头为 `Cache-Control: no-cache, no-store`
+
+## 文件
+
+| 文件 | 作用 |
+|------|------|
+| `index.ts` | 插件入口：注册 capability、路由声明、`plugin:config:beforeSave`、`request:route` |
+| `provider.ts` | 配置归一化/校验、模型选举（`selectAiModel`）、模型目录（`listChatModelOptions`） |
+| `chat.ts` | `ai.chat.generate` 实现：请求转换、上游调用、流式解析、有限重试与 usage/progress 遥测 |
+| `http.ts` | 可选的 OpenAI 兼容 HTTP 端点 |
+| `io.ts` | 有界读取 / 超时竞态 / base64 等共享工具 |
+| `types.ts` | 能力契约与配置字段定义 |
+
+### Progress observer
+
+消费者可以在请求级传入可选观察器；观察器不会进入 Provider 请求体，异常也不会影响生成结果：
+
+```ts
+service.generate(request, {
+  onProgress: event => {
+    // event.phase: queued/requesting/streaming/completed/failed/cancelled
+    // event.usage: inputTokens/outputTokens/totalTokens
+    // event.*Estimated 表示没有 Provider 精确 usage 时的受限估算
+  },
+});
+```
+
+流式 Chat 请求会尽量请求 OpenAI 兼容的 `stream_options.include_usage`。Provider 明确拒绝该选项时，AI 插件会移除该选项重试一次；即使没有精确 usage，正文流也会继续，并保留估算标记。
+
+上游请求等待响应头或流式首个 chunk 的单次尝试预算为 3 秒；发生超时、网络错误、429 或 5xx 时最多自动重试 3 次，并使用短暂退避。流式请求一旦已经向消费者交付 chunk，不再重试，以避免重复内容和重复计费。流开始后的持续生成仍受原有 120 秒总时限约束。

@@ -1,0 +1,143 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+import { getAvailableTranslationLocales } from '@/lib/i18n-registry';
+import { matchSupportedLocale, normalizeLocale } from '@/lib/i18n';
+import {
+  DEFAULT_TIMEZONE,
+  STANDARD_TIMEZONES,
+  TIMEZONE_REGIONS,
+  TIMEZONE_REGION_LABEL_KEYS,
+  formatTimezoneLabel,
+  getTimezoneRegion,
+  isIanaTimezone,
+} from '@/lib/timezone';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { options, urls, user, csrfToken } = ctx;
+const configuredLanguage = typeof options.lang === 'string' ? options.lang : 'zh_CN';
+const availableLanguages = getAvailableTranslationLocales(ctx.activatedPlugins);
+const configuredLanguageMatch = configuredLanguage === ''
+  ? null
+  : matchSupportedLocale(configuredLanguage, availableLanguages.map(({ locale }) => locale));
+const languageIsAvailable = configuredLanguage === '' || configuredLanguageMatch !== null;
+const configuredTimezone = isIanaTimezone(options.timezone) ? options.timezone : DEFAULT_TIMEZONE;
+const timezoneGroups = TIMEZONE_REGIONS.map((region) => ({
+  region,
+  labelKey: TIMEZONE_REGION_LABEL_KEYS[region],
+  timezones: STANDARD_TIMEZONES.filter((timezone) => getTimezoneRegion(timezone) === region),
+}));
+---
+<Admin title={ctx.i18n.t('admin.page.generalOptions', {}, 'General settings')} options={options} urls={urls} user={user} activeMenu="options" pluginCtx={ctx}>
+  <div class="col-mb-12 col-tb-8 col-tb-offset-2" role="form">
+    <form method="post" action="/api/admin/options">
+      <input type="hidden" name="_" value={csrfToken} />
+      <ul class="typecho-option">
+        <li>
+          <label for="title" class="typecho-label">{ctx.i18n.t('admin.field.siteTitle', {}, 'Site title')}</label>
+          <p><input type="text" id="title" name="title" class="text w-100" value={options.title} /></p>
+          <p class="description">{ctx.i18n.t('admin.description.siteTitle', {}, 'The site name appears in page titles.')}</p>
+        </li>
+        <li>
+          <label for="description" class="typecho-label">{ctx.i18n.t('admin.field.siteDescription', {}, 'Site description')}</label>
+          <p><input type="text" id="description" name="description" class="text w-100" value={options.description} /></p>
+          <p class="description">{ctx.i18n.t('admin.description.siteDescription', {}, 'The site description appears in the page head.')}</p>
+        </li>
+        <li>
+          <label for="keywords" class="typecho-label">{ctx.i18n.t('admin.field.keywords', {}, 'Keywords')}</label>
+          <p><input type="text" id="keywords" name="keywords" class="text w-100" value={options.keywords} placeholder={ctx.i18n.t('admin.description.keywords', {}, 'Separate multiple keywords with commas.')} /></p>
+          <p class="description">{ctx.i18n.t('admin.description.keywords', {}, 'Separate multiple keywords with commas.')}</p>
+        </li>
+        <li>
+          <label for="siteUrl" class="typecho-label">{ctx.i18n.t('admin.field.siteAddress', {}, 'Site address')}</label>
+          <p><input type="url" id="siteUrl" name="siteUrl" class="text w-100" value={options.siteUrl} /></p>
+          <p class="description">{ctx.i18n.t('admin.description.siteAddress', {}, 'Include the http:// or https:// prefix.')}</p>
+        </li>
+        <li>
+          <label for="lang" class="typecho-label">{ctx.i18n.t('admin.field.language', {}, 'Language')}</label>
+          <p>
+            <select name="lang" id="lang">
+              <option value="" selected={configuredLanguage === ''}>{ctx.i18n.t('admin.option.auto', {}, 'Auto (browser language)')}</option>
+              {availableLanguages.map(({ locale, displayName }) => (
+                <option
+                  value={normalizeLocale(locale) === configuredLanguageMatch && configuredLanguage !== '' ? configuredLanguage : locale}
+                  selected={normalizeLocale(locale) === configuredLanguageMatch}
+                >
+                  {displayName || (locale === 'zh-CN'
+                    ? ctx.i18n.t('admin.option.zhCN', {}, 'Chinese (Simplified)')
+                    : locale === 'en'
+                      ? ctx.i18n.t('admin.option.en', {}, 'English')
+                      : locale)}
+                </option>
+              ))}
+              {!languageIsAvailable && configuredLanguage !== '' && (
+                <option value={configuredLanguage} selected disabled>
+                  {configuredLanguage} ({ctx.i18n.t('admin.status.unavailable', {}, 'Unavailable')})
+                </option>
+              )}
+            </select>
+          </p>
+          <p class="description">{ctx.i18n.t('admin.description.languageAuto', {}, 'Automatically select a language from the browser request.')}</p>
+        </li>
+        <li>
+          <label class="typecho-label">{ctx.i18n.t('admin.field.timezone', {}, 'Timezone')}</label>
+          <p>
+            <select name="timezone" id="timezone">
+              <option value="UTC" selected={configuredTimezone === 'UTC'}>{formatTimezoneLabel('UTC')}</option>
+              {timezoneGroups.map(({ region, labelKey, timezones }) => (
+                <optgroup label={ctx.i18n.t(labelKey, {}, region)}>
+                  {timezones.map((timezone) => (
+                    <option value={timezone} selected={configuredTimezone === timezone}>{formatTimezoneLabel(timezone)}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </p>
+          <p class="description">{ctx.i18n.t('admin.description.timezone', {}, 'Select an IANA time zone with regional rules.')}</p>
+        </li>
+        <li>
+          <label class="typecho-label">
+            <input type="checkbox" name="allowRegister" value="1" checked={!!options.allowRegister} />
+            {ctx.i18n.t('admin.field.allowRegister', {}, 'Allow registration')}
+          </label>
+          <p class="description">{ctx.i18n.t('admin.description.allowRegister', {}, 'Allow visitors to register on your blog.')}</p>
+        </li>
+        <li>
+          <label for="attachmentTypes" class="typecho-label">{ctx.i18n.t('admin.field.uploadTypes', {}, 'Allowed file types')}</label>
+          <p><input type="text" id="attachmentTypes" name="attachmentTypes" class="text w-100"
+            value={options.attachmentTypes || '@image@'} /></p>
+          <p class="description">{ctx.i18n.t('admin.description.uploadTypes', {}, 'Separate values with commas. @image@ represents common image types.')}</p>
+        </li>
+        <li>
+          <label class="typecho-label">
+            <input type="checkbox" name="cacheEnabled" value="1" checked={options.cacheEnabled !== 0} />
+            {ctx.i18n.t('admin.field.cache', {}, 'Page cache')}
+          </label>
+          <p class="description">{ctx.i18n.t('admin.description.cache', {}, 'Cache anonymous pages at the edge for five minutes. Content changes clear the cache.')}</p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label for="robotsTxt" class="typecho-label">{ctx.i18n.t('admin.field.robots', {}, 'robots.txt content')}</label>
+          <p><textarea id="robotsTxt" name="robotsTxt" class="w-100" rows="5">{options.robotsTxt || ''}</textarea></p>
+          <p class="description">{ctx.i18n.t('admin.description.robots', {}, 'Leave blank to use the default Allow / Disallow /admin/ /api/ Sitemap rules.')}</p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option typecho-option-submit">
+        <li>
+          <button type="submit" class="btn primary">{ctx.i18n.t('admin.action.save', {}, 'Save settings')}</button>
+        </li>
+      </ul>
+    </form>
+  </div>
+</Admin>

@@ -1,0 +1,180 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { options, urls, user, csrfToken } = ctx;
+
+// Convert commentsPostTimeout from seconds to days for display
+const commentsPostTimeoutDays = options.commentsPostTimeout
+  ? Math.round(Number(options.commentsPostTimeout) / (24 * 3600))
+  : 14;
+
+// Convert commentsPostInterval from seconds to minutes for display
+const commentsPostIntervalMinutes = options.commentsPostInterval
+  ? Math.round(Number(options.commentsPostInterval) / 60)
+  : 1;
+---
+<Admin title={ctx.i18n.t('admin.page.discussionOptions', {}, 'Discussion settings')} options={options} urls={urls} user={user} activeMenu="options-discussion" pluginCtx={ctx}>
+  <div class="col-mb-12 col-tb-8 col-tb-offset-2" role="form">
+    <form method="post" action="/api/admin/options">
+      <input type="hidden" name="_" value={csrfToken} />
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label" for="commentsListSize">{ctx.i18n.t('admin.field.commentsListSize', {}, 'Comment list size')}</label>
+          <input type="text" id="commentsListSize" name="commentsListSize" class="w-20"
+            value={options.commentsListSize || '10'} />
+          <p class="description">
+            {ctx.i18n.t('admin.description.commentsListSize', {}, 'Number of comments shown in the sidebar.')}
+          </p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label">{ctx.i18n.t('admin.option.commentsDisplay', {}, 'Comment display')}</label>
+          <ul>
+            <li>
+              <input type="checkbox" id="commentsShowCommentOnly" name="commentsShowCommentOnly" value="1"
+                checked={!!options.commentsShowCommentOnly && options.commentsShowCommentOnly !== '0'} />
+              <label for="commentsShowCommentOnly">{ctx.i18n.t('admin.description.commentsOnly', {}, 'Show comments only; hide Pingbacks and Trackbacks.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsMarkdown" name="commentsMarkdown" value="1"
+                checked={!!options.commentsMarkdown && options.commentsMarkdown !== '0'} />
+              <label for="commentsMarkdown">{ctx.i18n.t('admin.description.commentsMarkdown', {}, 'Use Markdown syntax in comments.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsShowUrl" name="commentsShowUrl" value="1"
+                checked={!!options.commentsShowUrl} />
+              <label for="commentsShowUrl">{ctx.i18n.t('admin.description.commentsShowUrl', {}, 'Automatically link commenter names to their websites.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsUrlNofollow" name="commentsUrlNofollow" value="1"
+                checked={!!options.commentsUrlNofollow && options.commentsUrlNofollow !== '0'} />
+              <label for="commentsUrlNofollow">{ctx.i18n.t('admin.description.commentsNofollow', {}, 'Add the nofollow attribute to commenter website links.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsAvatar" name="commentsAvatar" value="1"
+                checked={!!options.commentsAvatar} />
+              <label for="commentsAvatar">{ctx.i18n.t('admin.description.commentsAvatar', {}, 'Enable Gravatar avatars. Maximum rating:')}</label>
+              <select name="commentsAvatarRating" id="commentsAvatarRating">
+                <option value="G" selected={!options.commentsAvatarRating || options.commentsAvatarRating === 'G'}>{ctx.i18n.t('admin.option.ratingG', {}, 'G - General')}</option>
+                <option value="PG" selected={options.commentsAvatarRating === 'PG'}>{ctx.i18n.t('admin.option.ratingPg', {}, 'PG - Parental guidance')}</option>
+                <option value="R" selected={options.commentsAvatarRating === 'R'}>{ctx.i18n.t('admin.option.ratingR', {}, 'R - Restricted')}</option>
+                <option value="X" selected={options.commentsAvatarRating === 'X'}>{ctx.i18n.t('admin.option.ratingX', {}, 'X - Highly restricted')}</option>
+              </select>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsPageBreak" name="commentsPageBreak" value="1"
+                checked={!!options.commentsPageBreak && options.commentsPageBreak !== '0'} />
+              <label for="commentsPageBreak">{ctx.i18n.t('admin.description.commentsPaginationLabel', {}, 'Enable comment pagination. Show')}</label>
+              <input type="text" id="commentsPageSize" name="commentsPageSize" class="text-s admin-width-40"
+                value={options.commentsPageSize || '20'} />
+              {ctx.i18n.t('admin.unit.commentsPerPage', {}, 'comments per page; use the')}
+              <select name="commentsPageDisplay" id="commentsPageDisplay">
+                <option value="last" selected={!options.commentsPageDisplay || options.commentsPageDisplay === 'last'}>{ctx.i18n.t('admin.option.last', {}, 'Last')}</option>
+                <option value="first" selected={options.commentsPageDisplay === 'first'}>{ctx.i18n.t('admin.option.first', {}, 'First')}</option>
+              </select>
+              {ctx.i18n.t('admin.unit.pageAsDefault', {}, 'page as the default view.')}
+            </li>
+            <li>
+              <input type="checkbox" id="commentsThreaded" name="commentsThreaded" value="1"
+                checked={!!options.commentsThreaded && options.commentsThreaded !== '0'} />
+              <label for="commentsThreaded">{ctx.i18n.t('admin.description.commentsThreadedLabel', {}, 'Allow comment replies with')}</label>
+              <select id="commentsMaxNestingLevels" name="commentsMaxNestingLevels">
+                {[2, 3, 4, 5, 6, 7].map(n => (
+                  <option value={String(n)} selected={Number(options.commentsMaxNestingLevels) === n}>{n}</option>
+                ))}
+              </select>
+              {ctx.i18n.t('admin.unit.nestingLevels', {}, 'nesting levels.')}
+              <br />
+              {ctx.i18n.t('admin.unit.showComments', {}, 'Show')}
+              <select name="commentsOrder" id="commentsOrder">
+                <option value="DESC" selected={options.commentsOrder === 'DESC'}>{ctx.i18n.t('admin.option.newer', {}, 'Newer')}</option>
+                <option value="ASC" selected={!options.commentsOrder || options.commentsOrder === 'ASC'}>{ctx.i18n.t('admin.option.older', {}, 'Older')}</option>
+              </select>
+              {ctx.i18n.t('admin.unit.commentsFirst', {}, 'comments first.')}
+            </li>
+          </ul>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label class="typecho-label">{ctx.i18n.t('admin.option.commentsSubmit', {}, 'Comment submission')}</label>
+          <ul>
+            <li>
+              <input type="checkbox" id="commentsRequireModeration" name="commentsRequireModeration" value="1"
+                checked={!!options.commentsRequireModeration && options.commentsRequireModeration !== '0'} />
+              <label for="commentsRequireModeration">{ctx.i18n.t('admin.description.commentsModeration', {}, 'All comments must be approved before publication.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsWhitelist" name="commentsWhitelist" value="1"
+                checked={!!options.commentsWhitelist && options.commentsWhitelist !== '0'} />
+              <label for="commentsWhitelist">{ctx.i18n.t('admin.description.commentsWhitelist', {}, 'The commenter must have a previously approved comment.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsRequireMail" name="commentsRequireMail" value="1"
+                checked={!!options.commentsRequireMail && options.commentsRequireMail !== '0'} />
+              <label for="commentsRequireMail">{ctx.i18n.t('admin.description.commentsRequireMail', {}, 'Commenters must provide an email address.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsRequireURL" name="commentsRequireURL" value="1"
+                checked={!!options.commentsRequireURL && options.commentsRequireURL !== '0'} />
+              <label for="commentsRequireURL">{ctx.i18n.t('admin.description.commentsRequireUrl', {}, 'Commenters must provide a website URL.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsCheckReferer" name="commentsCheckReferer" value="1"
+                checked={!!options.commentsCheckReferer && options.commentsCheckReferer !== '0'} />
+              <label for="commentsCheckReferer">{ctx.i18n.t('admin.description.commentsReferer', {}, 'Verify that the comment source URL matches the post URL.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsAntiSpam" name="commentsAntiSpam" value="1"
+                checked={!!options.commentsAntiSpam && options.commentsAntiSpam !== '0'} />
+              <label for="commentsAntiSpam">{ctx.i18n.t('admin.description.commentsAntiSpam', {}, 'Enable anti-spam protection.')}</label>
+            </li>
+            <li>
+              <input type="checkbox" id="commentsAutoClose" name="commentsAutoClose" value="1"
+                checked={!!options.commentsAutoClose && options.commentsAutoClose !== '0'} />
+              <label for="commentsAutoClose">{ctx.i18n.t('admin.description.commentsAutoCloseLabel', {}, 'Automatically close comments')}</label>
+              <input type="text" id="commentsPostTimeout" name="commentsPostTimeout" class="text-s admin-width-40"
+                value={String(commentsPostTimeoutDays)} />
+              {ctx.i18n.t('admin.unit.daysAfter', {}, 'days after publication.')}
+            </li>
+            <li>
+              <input type="checkbox" id="commentsPostIntervalEnable" name="commentsPostIntervalEnable" value="1"
+                checked={!!options.commentsPostIntervalEnable && options.commentsPostIntervalEnable !== '0'} />
+              <label for="commentsPostIntervalEnable">{ctx.i18n.t('admin.description.commentsIntervalLabel', {}, 'Limit comments from the same IP to one every')}</label>
+              <input type="text" id="commentsPostInterval" name="commentsPostInterval" class="text-s admin-width-40"
+                value={String(commentsPostIntervalMinutes)} />
+              {ctx.i18n.t('admin.unit.minutes', {}, 'minutes.')}
+            </li>
+          </ul>
+        </li>
+      </ul>
+
+      <ul class="typecho-option">
+        <li>
+          <label for="commentsHTMLTagAllowed" class="typecho-label">{ctx.i18n.t('admin.field.htmlAllowed', {}, 'Allowed HTML tags and attributes')}</label>
+          <p><textarea id="commentsHTMLTagAllowed" name="commentsHTMLTagAllowed" class="w-100 mono" rows="3">{options.commentsHTMLTagAllowed ?? '<a href=""> <img src=""> <em> <strong> <cite> <blockquote> <code> <pre>'}</textarea></p>
+          <p class="description">{ctx.i18n.t('admin.description.commentsHtml', {}, 'User comments do not allow HTML by default. List allowed tags and attributes here.')}</p>
+        </li>
+      </ul>
+
+      <ul class="typecho-option typecho-option-submit">
+        <li>
+          <button type="submit" class="btn primary">{ctx.i18n.t('admin.action.save', {}, 'Save settings')}</button>
+        </li>
+      </ul>
+    </form>
+  </div>
+</Admin>

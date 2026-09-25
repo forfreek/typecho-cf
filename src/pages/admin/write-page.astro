@@ -1,0 +1,308 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { canUseContentEditor } from '@/lib/admin-auth';
+import { eq, and } from 'drizzle-orm';
+import { schema } from '@/db';
+import { buildPermalink } from '@/lib/content';
+import { applyFilterSafely } from '@/lib/plugin';
+import { escapeHtml, safeJsonForScript } from '@/lib/escape';
+import EditorScript from '@/components/admin/EditorScript.astro';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+if (!canUseContentEditor(ctx.user!, null, 'editor')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { db, options, urls, user, csrfToken } = ctx;
+const cid = Astro.url.searchParams.get('cid');
+type ContentRow = typeof schema.contents.$inferSelect;
+interface AttachmentItem { cid: number; title: string | null; url: string; size: number; isImage: boolean; }
+let page: ContentRow | null = null;
+let isEdit = false;
+let customFields: { name: string; type: string; value: string }[] = [];
+let attachments: AttachmentItem[] = [];
+
+const cidNum = cid ? parseInt(cid, 10) : 0;
+if (cidNum > 0) {
+  let [pageRows, fieldRows, attachmentRows] = await db.batch([
+    db.select().from(schema.contents).where(eq(schema.contents.cid, cidNum)).limit(1),
+    db.select().from(schema.fields).where(eq(schema.fields.cid, cidNum)),
+    db.select().from(schema.contents)
+      .where(and(eq(schema.contents.type, 'attachment'), eq(schema.contents.parent, cidNum)))
+      .orderBy(schema.contents.created),
+  ]);
+  page = pageRows[0] || null;
+  if (page?.type === 'page') {
+    const revision = await db.query.contents.findFirst({
+      where: and(eq(schema.contents.parent, page.cid), eq(schema.contents.type, 'revision')),
+    });
+    if (revision) {
+      page = { ...page, ...revision, cid: page.cid, type: 'revision' };
+      fieldRows = await db.select().from(schema.fields).where(eq(schema.fields.cid, revision.cid));
+    }
+  }
+  if (page) {
+    isEdit = true;
+    customFields = fieldRows.map(f => ({
+      name: f.name,
+      type: f.type || 'str',
+      value: f.type === 'int' ? String(f.int_value || 0)
+           : f.type === 'float' ? String(f.float_value || 0)
+           : (f.str_value || ''),
+    }));
+    attachments = attachmentRows.map(row => {
+      let meta: Record<string, unknown> = {};
+      try { meta = JSON.parse(row.text || '{}'); } catch {}
+      return {
+        cid: row.cid,
+        title: row.title,
+        url: (meta.url as string) || '',
+        size: (meta.size as number) || 0,
+        isImage: ((meta.type as string) || '').startsWith('image/'),
+      };
+    });
+  }
+}
+
+const isMarkdown = !page || (page.text && page.text.indexOf('<!--markdown-->') >= 0);
+
+// Build preview URL
+const previewUrl = isEdit && page ? buildPermalink(page, urls.siteUrl, options.permalinkPattern, options.pagePattern) : '';
+const writePageHookExtra = { options, page, user, isEdit, i18n: ctx.i18n, capabilityRuntime: ctx.capabilityRuntime };
+const writePageOptionHtml = await applyFilterSafely(ctx, 'admin:writePage:option', '', writePageHookExtra);
+const writePageAdvanceOptionHtml = await applyFilterSafely(ctx, 'admin:writePage:advanceOption', '', writePageHookExtra);
+const writePageBottomHtml = await applyFilterSafely(ctx, 'admin:writePage:bottom', '', writePageHookExtra);
+const t = ctx.i18n.t.bind(ctx.i18n);
+const tPlural = ctx.i18n.tPlural.bind(ctx.i18n);
+const formatAttachmentSize = (size: number): string => {
+  if (size < 1024) return `${size} ${t('admin.unit.bytes', {}, 'B')}`;
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} ${t('admin.unit.kilobytes', {}, 'KB')}`;
+  return `${(size / (1024 * 1024)).toFixed(1)} ${t('admin.unit.megabytes', {}, 'MB')}`;
+};
+const editorMessagesJson = safeJsonForScript({
+  bold: `${t('editor.bold', {}, 'Bold')} <strong> Ctrl+B`,
+  boldexample: t('editor.boldExample', {}, 'bold text'),
+  italic: `${t('editor.italic', {}, 'Italic')} <em> Ctrl+I`,
+  italicexample: t('editor.italicExample', {}, 'italic text'),
+  link: `${t('editor.link', {}, 'Link')} <a> Ctrl+L`,
+  linkdescription: t('editor.linkDescription', {}, 'Enter link description'),
+  quote: `${t('editor.quote', {}, 'Quote')} <blockquote> Ctrl+Q`,
+  quoteexample: t('editor.quoteExample', {}, 'quoted text'),
+  code: `${t('editor.code', {}, 'Code')} <pre><code> Ctrl+K`,
+  codeexample: t('editor.codeExample', {}, 'Enter code'),
+  image: `${t('editor.image', {}, 'Image')} <img> Ctrl+G`,
+  imagedescription: t('editor.imageDescription', {}, 'Enter image description'),
+  olist: `${t('editor.orderedList', {}, 'Numbered list')} <ol> Ctrl+O`,
+  ulist: `${t('editor.unorderedList', {}, 'Bulleted list')} <ul> Ctrl+U`,
+  litem: t('editor.listItem', {}, 'List item'),
+  heading: `${t('editor.heading', {}, 'Heading')} <h1>/<h2> Ctrl+H`,
+  headingexample: t('editor.headingExample', {}, 'heading text'),
+  hr: `${t('editor.horizontalRule', {}, 'Horizontal rule')} <hr> Ctrl+R`,
+  more: `${t('editor.more', {}, 'More separator')} <!--more--> Ctrl+M`,
+  undo: `${t('editor.undo', {}, 'Undo')} - Ctrl+Z`,
+  redo: `${t('editor.redo', {}, 'Redo')} - Ctrl+Y`,
+  redomac: `${t('editor.redoMac', {}, 'Redo')} - Ctrl+Shift+Z`,
+  fullscreen: `${t('editor.fullscreen', {}, 'Fullscreen')} - Ctrl+J`,
+  exitFullscreen: `${t('editor.exitFullscreen', {}, 'Exit fullscreen')} - Ctrl+E`,
+  fullscreenUnsupport: t('editor.fullscreenUnsupported', {}, 'This browser does not support fullscreen mode'),
+  imagedialog: `<p><b>${escapeHtml(t('editor.imageDialogTitle', {}, 'Insert image'))}</b></p><p>${escapeHtml(t('editor.imageDialogPrompt', {}, 'Enter the remote image URL below'))}</p>`,
+  linkdialog: `<p><b>${escapeHtml(t('editor.linkDialogTitle', {}, 'Insert link'))}</b></p><p>${escapeHtml(t('editor.linkDialogPrompt', {}, 'Enter the link URL below'))}</p>`,
+  ok: t('editor.ok', {}, 'OK'),
+  cancel: t('admin.action.cancel', {}, 'Cancel'),
+  help: t('editor.markdownHelp', {}, 'Markdown syntax help'),
+  compose: t('editor.compose', {}, 'Compose'),
+  preview: t('editor.preview', {}, 'Preview'),
+  fieldName: t('editor.fieldName', {}, 'Field name'),
+  stringType: t('admin.option.character', {}, 'String'),
+  integerType: t('admin.option.integer', {}, 'Integer'),
+  decimalType: t('admin.option.decimal', {}, 'Decimal'),
+  delete: t('admin.action.delete', {}, 'Delete'),
+  insertFile: t('editor.insertFile', {}, 'Click to insert file'),
+  uploadDrop: t('editor.uploadDrop', {}, 'Drop files here'),
+  chooseFileUpload: t('editor.chooseFileUpload', {}, 'or choose a file to upload'),
+  deleteFileConfirm: t('editor.deleteFileConfirm', { name: '{name}' }, 'Are you sure you want to delete the file {name}?'),
+  uploadFailed: t('editor.uploadFailed', {}, 'Upload failed'),
+  uploadFailedWithReason: t('editor.uploadFailedWithReason', { name: '{name}', reason: '{reason}' }, '{name} upload failed: {reason}'),
+});
+
+---
+<Admin
+  title={isEdit ? t('admin.form.editPage', {}, 'Edit page') : t('admin.form.newPage', {}, 'Create a new page')}
+  options={options}
+  urls={urls}
+  user={user}
+  activeMenu={isEdit ? 'manage-pages' : 'write-page'}
+  bodyClass="typecho-post-area"
+  pluginCtx={ctx}
+>
+  <form action="/api/admin/content" method="post" name="write_page">
+    <input type="hidden" name="_" value={csrfToken} />
+    <div class="col-mb-12 col-tb-9" role="main">
+      {isEdit && page.type === 'page_draft' && (
+        <cite class="edit-draft-notice">{t('admin.notice.editingDraft', {}, 'You are editing an unpublished draft.')}</cite>
+      )}
+
+      <p class="title">
+        <label for="title" class="sr-only">{t('admin.field.title', {}, 'Title')}</label>
+        <input type="text" id="title" name="title" autocomplete="off"
+          value={page?.title || ''} placeholder={t('admin.field.title', {}, 'Title')} class="w-100 text title" />
+      </p>
+
+      <p class="mono url-slug">
+        <label for="slug" class="sr-only">{t('admin.field.slug', {}, 'Slug')}</label>
+        <span id="preview-url">{isEdit ? previewUrl : ''}</span>
+        <input type="text" id="slug" name="slug" autocomplete="off"
+          value={page?.slug || ''} class="mono hidden" placeholder={isEdit ? String(page?.cid) : t('admin.description.autoGenerateSlug', {}, 'Leave blank to generate automatically')} />
+        <a href="#" id="edit-slug-btn" class="i-edit" title={t('admin.action.editSlug', {}, 'Edit slug')}></a>
+      </p>
+
+      <p>
+        <label for="text" class="sr-only">{t('admin.field.content', {}, 'Content')}</label>
+        <textarea style={`height: ${options.editorSize || 350}px`} autocomplete="off"
+          id="text" name="text" class="w-100 mono">{page?.text ? page.text.replace(/^<!--markdown-->/, '') : ''}</textarea>
+      </p>
+
+      {writePageBottomHtml && <Fragment set:html={writePageBottomHtml} />}
+
+      <p class="submit clearfix">
+        <span class="left">
+          <button type="button" id="btn-cancel-preview" class="btn">{t('admin.action.cancel', {}, 'Cancel')}</button>
+        </span>
+        <span class="right">
+          <input type="hidden" name="do" value={isEdit ? 'update' : 'create'} />
+          <input type="hidden" name="type" value="page" />
+          {isEdit && <input type="hidden" name="cid" value={String(page.cid)} />}
+          <button type="submit" formaction="/admin/content-preview" formmethod="post" formtarget="_blank" id="btn-preview" class="btn">{t('admin.action.preview', {}, 'Preview')}</button>
+          <button type="submit" name="status" value="draft" id="btn-save" class="btn">{t('admin.action.saveDraft', {}, 'Save draft')}</button>
+          <button type="submit" name="status" value="publish" class="btn primary" id="btn-submit">{t('admin.option.publish', {}, 'Publish')} {t('admin.field.page', {}, 'page')}</button>
+          {isMarkdown && <input type="hidden" name="markdown" value="1" />}
+        </span>
+      </p>
+    </div>
+
+    <div id="edit-secondary" class="col-mb-12 col-tb-3" role="complementary">
+      <ul class="typecho-option-tabs clearfix">
+         <li class="active w-50"><a href="#tab-advance">{t('admin.menu.settings', {}, 'Settings')}</a></li>
+         <li class="w-50"><a href="#tab-files" id="tab-files-btn">{t('admin.field.attachments', {}, 'Attachments')}</a></li>
+      </ul>
+
+      <div id="tab-advance" class="tab-content">
+        <section class="typecho-post-option">
+          <label for="order" class="typecho-label">{t('admin.field.order', {}, 'Order')}</label>
+          <p><input type="text" id="order" name="order" value={String(page?.order || 0)} class="w-100" /></p>
+          <p class="description">{t('admin.description.pageOrder', {}, 'Set a sequence value to sort custom pages from smallest to largest.')}</p>
+        </section>
+
+        {writePageOptionHtml && <Fragment set:html={writePageOptionHtml} />}
+
+        <button type="button" id="advance-panel-btn" class="btn btn-xs">{t('admin.action.details', {}, 'Advanced options')} <i class="i-caret-down"></i></button>
+        <div id="advance-panel">
+          <section class="typecho-post-option visibility-option">
+            <label for="visibility" class="typecho-label">{t('admin.field.status', {}, 'Visibility')}</label>
+            <p>
+              <select id="visibility" name="visibility">
+                <option value="publish" selected={(!page?.status || page?.status === 'publish')}>{t('admin.option.publish', {}, 'Published')}</option>
+                <option value="hidden" selected={page?.status === 'hidden'}>{t('admin.option.hidden', {}, 'Hidden')}</option>
+              </select>
+            </p>
+          </section>
+
+          <section class="typecho-post-option">
+            <label for="template" class="typecho-label">{t('admin.field.customTemplate', {}, 'Custom template')}</label>
+            <p>
+              <input type="text" id="template" name="template" class="text w-100"
+                value={page?.template || ''} placeholder={t('admin.field.customTemplate', {}, 'Custom template')} />
+            </p>
+            <p class="description">{t('admin.description.pageTemplate', {}, 'When a custom template is specified, the page is rendered with that template.')}</p>
+          </section>
+
+          <section class="typecho-post-option allow-option">
+            <label class="typecho-label">{t('admin.field.permissions', {}, 'Permissions')}</label>
+            <ul>
+              <li>
+                <input id="allowComment" name="allowComment" type="checkbox" value="1"
+                  checked={page ? page.allowComment === '1' : true} />
+                <label for="allowComment">{t('admin.field.allowComment', {}, 'Allow comments')}</label>
+              </li>
+              <li>
+                <input id="allowPing" name="allowPing" type="checkbox" value="1"
+                  checked={page ? page.allowPing === '1' : true} />
+                <label for="allowPing">{t('admin.field.allowPing', {}, 'Allow pings')}</label>
+              </li>
+              <li>
+                <input id="allowFeed" name="allowFeed" type="checkbox" value="1"
+                  checked={page ? page.allowFeed === '1' : true} />
+                <label for="allowFeed">{t('admin.field.allowFeed', {}, 'Include in feeds')}</label>
+              </li>
+            </ul>
+          </section>
+
+          {writePageAdvanceOptionHtml && <Fragment set:html={writePageAdvanceOptionHtml} />}
+        </div>
+
+        <div id="custom-field" class:list={[{ fold: customFields.length === 0 }]}>
+          <label class="typecho-label">
+            <a href="#custom-field-toggle" id="custom-field-toggle">{t('admin.field.customFields', {}, 'Custom fields')}</a>
+          </label>
+          <table id="custom-fields-table">
+            <thead>
+              <tr>
+                <th>{t('editor.fieldName', {}, 'Field name')}</th>
+                <th>{t('admin.field.type', {}, 'Type')}</th>
+                <th>{t('admin.field.value', {}, 'Value')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {customFields.map((f) => (
+                <tr>
+                  <td><input type="text" name="fieldNames[]" value={f.name} class="text w-100" /></td>
+                  <td>
+                    <select name={`fieldTypes[${f.name}]`} class="field-type-select w-100">
+                      <option value="str" selected={f.type === 'str'}>{t('admin.option.character', {}, 'String')}</option>
+                      <option value="int" selected={f.type === 'int'}>{t('admin.option.integer', {}, 'Integer')}</option>
+                      <option value="float" selected={f.type === 'float'}>{t('admin.option.decimal', {}, 'Decimal')}</option>
+                    </select>
+                  </td>
+                  <td><textarea name={`fieldValues[${f.name}]`} class="text w-100 mono" rows="2">{f.value}</textarea></td>
+                  <td><button type="button" class="btn btn-xs remove-field">{t('admin.action.delete', {}, 'Delete')}</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div class="description">
+            <button type="button" id="add-field-btn" class="btn btn-xs">{t('admin.action.add', {}, 'Add')} {t('editor.fieldName', {}, 'field')}</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-files" class="tab-content hidden">
+        <div id="upload-panel" class="p" data-cid={isEdit ? String(page.cid) : '0'}>
+          <div class="upload-area" draggable="true">
+            <p>{t('editor.uploadDrop', {}, 'Drop files here')}<br />{t('editor.chooseFileUpload', {}, 'or choose a file to upload')}</p>
+            <input type="file" id="file-input" multiple class="hidden" />
+          </div>
+          <ul id="file-list">
+            {attachments.map(att => (
+              <li data-cid={String(att.cid)} data-url={att.url} data-image={att.isImage ? '1' : '0'}>
+                <input type="hidden" name="attachment[]" value={String(att.cid)} />
+                <a class="insert" title={t('editor.insertFile', {}, 'Click to insert file')} href="#">{att.title || t('admin.form.noName', {}, 'Unnamed')}</a>
+                <div class="info">
+                  {formatAttachmentSize(att.size)}
+                  {' '}<a class="delete" href="#" title={t('admin.action.delete', {}, 'Delete')}><i class="i-delete"></i></a>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  <Fragment slot="footer">
+    <EditorScript messagesJson={editorMessagesJson} />
+    </Fragment>
+</Admin>

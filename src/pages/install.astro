@@ -1,0 +1,98 @@
+---
+import Base from '@/layouts/Base.astro';
+import { getDb, schema } from '@/db';
+import { loadOptions } from '@/lib/options';
+import { env } from 'cloudflare:workers';
+import { PASSWORD_MIN_LENGTH } from '@/lib/constants';
+import { createCoreRequestI18n } from '@/lib/i18n-runtime';
+
+const db = getDb(env.DB);
+let installed = false;
+
+try {
+  const options = await loadOptions(db);
+  installed = !!options.installed;
+} catch {
+  // DB tables don't exist yet
+}
+
+if (installed) {
+  return Astro.redirect('/');
+}
+
+// Show a deployment-warning banner if INSTALL_TOKEN is not configured.
+// This nudges operators to lock the install window before someone else
+// races them to it.
+const installTokenConfigured = typeof (env as any).INSTALL_TOKEN === 'string' && (env as any).INSTALL_TOKEN.length > 0;
+
+const defaultOptions = {
+  title: 'Blog', charset: 'UTF-8', lang: '', description: '',
+  siteUrl: new URL(Astro.request.url).origin,
+};
+const urls = { siteUrl: defaultOptions.siteUrl };
+const i18n = createCoreRequestI18n(Astro.request).i18n;
+---
+<Base title={i18n.t('admin.page.install', {}, 'Install Typecho')} options={defaultOptions as any} urls={urls as any} i18n={i18n}>
+  <Fragment slot="head">
+    <link rel="stylesheet" href="/css/admin.css" />
+    <style>
+      body { background: #f5f5f5; }
+      .install-container { max-width: 600px; margin: 3em auto; padding: 2em; background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+      .install-container h1 { text-align: center; margin-bottom: 0.5em; }
+      .install-container .subtitle { text-align: center; color: #888; margin-bottom: 2em; }
+      .install-container label { display: block; margin-bottom: 0.3em; font-weight: bold; }
+      .install-container input.text { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; margin-bottom: 1em; }
+      .install-container .submit { display: block; width: 100%; padding: 12px; border: none; background: #467b96; color: #fff; border-radius: 4px; cursor: pointer; font-size: 1em; }
+      .install-container .submit:hover { background: #3a6880; }
+      .install-container .note { font-size: 0.85em; color: #888; margin-top: -0.5em; margin-bottom: 1em; }
+      .install-container .warning { background: #fff3cd; border: 1px solid #ffc107; color: #856404; padding: 12px; border-radius: 4px; margin-bottom: 1.5em; font-size: 0.9em; }
+      .install-container .warning strong { display: block; margin-bottom: 0.3em; }
+    </style>
+  </Fragment>
+
+  <div class="install-container">
+    <h1>Typecho</h1>
+    <p class="subtitle">{i18n.t('admin.install.subtitle', {}, 'A blog system built with Astro and Cloudflare Workers')}</p>
+
+    {!installTokenConfigured && (
+      <div class="warning">
+        <strong>⚠ {i18n.t('admin.install.unprotectedWarning', {}, 'The installation window is not protected. Set INSTALL_TOKEN before continuing if this network is not trusted.')}</strong>
+      </div>
+    )}
+
+    <form method="post" action="/api/install">
+      {installTokenConfigured && (
+        <p>
+          <label for="installToken">{i18n.t('admin.field.installToken', {}, 'Installation token')}</label>
+          <input type="password" id="installToken" name="installToken" class="text" required />
+          <span class="note">{i18n.t('admin.install.tokenHint', {}, 'The INSTALL_TOKEN value configured through wrangler secret.')}</span>
+        </p>
+      )}
+      <p>
+        <label for="siteTitle">{i18n.t('admin.field.siteTitle', {}, 'Site title')}</label>
+        <input type="text" id="siteTitle" name="siteTitle" class="text" value="Hello World" required />
+      </p>
+      <p>
+        <label for="siteDescription">{i18n.t('admin.field.siteDescription', {}, 'Site description')}</label>
+        <input type="text" id="siteDescription" name="siteDescription" class="text" value="Just Another Blog" />
+      </p>
+      <p>
+        <label for="userName">{i18n.t('admin.field.username', {}, 'Username')}</label>
+        <input type="text" id="userName" name="userName" class="text" value="admin" required />
+      </p>
+      <p>
+        <label for="userPassword">{i18n.t('admin.field.password', {}, 'Password')}</label>
+        <input type="password" id="userPassword" name="userPassword" class="text" minlength={PASSWORD_MIN_LENGTH} required />
+        <span class="note">{i18n.t('admin.install.passwordHint', { count: PASSWORD_MIN_LENGTH }, `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`)}</span>
+      </p>
+      <p>
+        <label for="userMail">{i18n.t('admin.field.email', {}, 'Email')}</label>
+        <input type="email" id="userMail" name="userMail" class="text" required />
+      </p>
+
+      <p>
+        <button type="submit" class="submit">{i18n.t('admin.install.start', {}, 'Start installation')}</button>
+      </p>
+    </form>
+  </div>
+</Base>

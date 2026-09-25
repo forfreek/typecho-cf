@@ -1,0 +1,121 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+import { buildTagLink } from '@/lib/content';
+import { and, eq } from 'drizzle-orm';
+import { schema } from '@/db';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'editor')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { db, options, urls, user, csrfToken } = ctx;
+
+// Editing
+const editMid = Astro.url.searchParams.get('mid');
+const editId = editMid ? parseInt(editMid, 10) : 0;
+const [tags, editRows] = await db.batch([
+  db.select().from(schema.metas)
+    .where(eq(schema.metas.type, 'tag'))
+    .orderBy(schema.metas.mid),
+  db.select().from(schema.metas)
+    .where(and(eq(schema.metas.mid, editId || -1), eq(schema.metas.type, 'tag')))
+    .limit(1),
+]);
+const editTag: any = editRows[0] ?? null;
+---
+<Admin title={ctx.i18n.t('admin.page.manageTags', {}, 'Manage tags')} options={options} urls={urls} user={user} activeMenu="manage-tags" pluginCtx={ctx}>
+  <div class="col-mb-12 col-tb-8 typecho-list" role="main">
+    <form method="post" name="manage_tags" class="operate-form">
+      <input type="hidden" name="_" value={csrfToken} />
+      <div class="typecho-list-operate clearfix">
+        <div class="operate">
+          <label><i class="sr-only">{ctx.i18n.t('admin.action.selectAll', {}, 'Select all')}</i><input type="checkbox" class="typecho-table-select-all" /></label>
+          <div class="btn-group btn-drop">
+            <button class="btn dropdown-toggle btn-s" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="tag-actions"><i class="sr-only">{ctx.i18n.t('admin.action.actions', {}, 'Actions')}</i>{ctx.i18n.t('admin.notice.selectAction', {}, 'Select an action')} <i class="i-caret-down"></i></button>
+            <ul class="dropdown-menu" id="tag-actions" role="menu">
+              <li><a href="/api/admin/meta?action=delete&type=tag">{ctx.i18n.t('admin.action.delete', {}, 'Delete')}</a></li>
+              <li><a href="/api/admin/meta?action=refresh&type=tag">{ctx.i18n.t('admin.action.refresh', {}, 'Refresh')}</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="typecho-table-wrap">
+        <table class="typecho-list-table">
+          <colgroup>
+            <col class="typecho-select-cell" />
+            <col width="" />
+            <col width="25%" class="kit-hidden-mb" />
+            <col width="15%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="typecho-select-cell"></th>
+              <th>{ctx.i18n.t('admin.field.name', {}, 'Name')}</th>
+              <th class="kit-hidden-mb">{ctx.i18n.t('admin.field.slug', {}, 'Slug')}</th>
+              <th>{ctx.i18n.t('admin.field.posts', {}, 'Posts')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tags.length === 0 ? (
+              <tr>
+                <td colspan="4"><h6 class="typecho-list-table-title">{ctx.i18n.t('admin.notice.noTags', {}, 'No tags')}</h6></td>
+              </tr>
+            ) : (
+              tags.map((tag) => (
+                <tr id={`mid-${tag.mid}`}>
+                  <td class="typecho-select-cell"><input type="checkbox" value={String(tag.mid)} name="mid[]" /></td>
+                  <td>
+                    <a href={`/admin/manage-tags?mid=${tag.mid}`}>{tag.name}</a>
+                    <a href={buildTagLink(tag.slug, urls.siteUrl)} title={`${ctx.i18n.t('admin.action.browse', {}, 'Browse')} ${tag.name}`}><i class="i-exlink"></i></a>
+                  </td>
+                  <td class="kit-hidden-mb">{tag.slug}</td>
+                  <td>
+                    <a class="balloon-button left size-small" href={`/admin/manage-posts?tag=${tag.slug}`}>{tag.count || 0}</a>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </form>
+  </div>
+
+  <div class="col-mb-12 col-tb-4" role="form">
+    <div class="admin-panel">
+      <form method="post" action="/api/admin/meta">
+        <input type="hidden" name="_" value={csrfToken} />
+        <input type="hidden" name="action" value={editTag ? 'update' : 'create'} />
+        <input type="hidden" name="type" value="tag" />
+        {editTag && <input type="hidden" name="mid" value={String(editTag.mid)} />}
+
+        <h4>{editTag ? ctx.i18n.t('admin.form.editTag', {}, 'Edit tag') : ctx.i18n.t('admin.form.newTag', {}, 'Add tag')}</h4>
+
+        <ul class="typecho-option">
+          <li>
+            <label for="name" class="typecho-label">{ctx.i18n.t('admin.field.tags', {}, 'Tag name')} *</label>
+            <input type="text" id="name" name="name" class="text w-100" value={editTag?.name || ''} required />
+            <p class="description">{ctx.i18n.t('admin.description.tagShown', {}, 'The tag name is shown on the public site.')}</p>
+          </li>
+          <li>
+            <label for="slug" class="typecho-label">{ctx.i18n.t('admin.field.slug', {}, 'Slug')}</label>
+            <input type="text" id="slug" name="slug" class="text w-100" value={editTag?.slug || ''} placeholder={ctx.i18n.t('admin.description.autoGenerateSlug', {}, 'Leave blank to generate automatically')} />
+            <p class="description">{ctx.i18n.t('admin.description.tagSlug', {}, 'The tag slug is used for friendly links.')}</p>
+          </li>
+        </ul>
+
+        <p>
+          <button type="submit" class="btn primary">{editTag ? ctx.i18n.t('admin.action.update', {}, 'Update') : ctx.i18n.t('admin.action.add', {}, 'Add')}</button>
+          {editTag && <a href="/admin/manage-tags" class="btn">{ctx.i18n.t('admin.action.cancel', {}, 'Cancel')}</a>}
+        </p>
+      </form>
+    </div>
+  </div>
+</Admin>

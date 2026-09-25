@@ -1,0 +1,104 @@
+---
+import Admin from '@/layouts/Admin.astro';
+import { createContext, requireAuth } from '@/lib/context';
+import { hasPermission } from '@/lib/auth';
+import { eq } from 'drizzle-orm';
+import { schema } from '@/db';
+import { PASSWORD_MIN_LENGTH } from '@/lib/constants';
+
+const ctx = await createContext(Astro.locals, Astro.request);
+const authCheck = requireAuth(ctx);
+if (authCheck) return authCheck;
+
+if (!hasPermission(ctx.user!.group || 'visitor', 'administrator')) {
+  return new Response(ctx.i18n.t('core.error.forbidden', {}, 'Forbidden'), { status: 403 });
+}
+
+const { db, options, urls, user, csrfToken } = ctx;
+const t = ctx.i18n.t.bind(ctx.i18n);
+const uid = parseInt(Astro.url.searchParams.get('uid') || '0', 10);
+
+let editUser: any = null;
+let isEdit = false;
+
+if (uid) {
+  editUser = await db.query.users.findFirst({
+    where: eq(schema.users.uid, uid),
+  });
+  if (editUser) isEdit = true;
+}
+
+const groups = [
+  { value: 'administrator', label: t('admin.option.administrator', {}, 'Administrator') },
+  { value: 'editor', label: t('admin.option.editor', {}, 'Editor') },
+  { value: 'contributor', label: t('admin.option.contributor', {}, 'Contributor') },
+  { value: 'subscriber', label: t('admin.option.subscriber', {}, 'Subscriber') },
+];
+---
+<Admin title={isEdit ? t('admin.page.editUser', {}, 'Edit user') : t('admin.page.newUser', {}, 'Add user')} options={options} urls={urls} user={user} activeMenu="manage-users" pluginCtx={ctx}>
+  <div class="col-mb-12 col-tb-8 col-tb-offset-2" role="form">
+    <form method="post" action="/api/admin/user">
+      <input type="hidden" name="_" value={csrfToken} />
+      <input type="hidden" name="do" value={isEdit ? 'update' : 'create'} />
+      {isEdit && <input type="hidden" name="uid" value={String(editUser.uid)} />}
+
+      <ul class="typecho-option">
+        <li>
+          <label for="name" class="typecho-label">{t('admin.field.username', {}, 'Username')} *</label>
+          <p><input type="text" id="name" name="name" class="text w-100" value={editUser?.name || ''}
+            {isEdit ? 'readonly' : ''} required /></p>
+          <p class="description">{isEdit ? t('admin.description.usernameImmutable', {}, 'The username cannot be changed after creation.') : t('admin.description.loginUsername', {}, 'The name used to sign in.')}</p>
+        </li>
+        <li>
+          <label for="mail" class="typecho-label">{t('admin.field.email', {}, 'Email')} *</label>
+          <p><input type="email" id="mail" name="mail" class="text w-100" value={editUser?.mail || ''} required /></p>
+          <p class="description">{t('admin.description.userContact', {}, "This email address is used as the user's contact address.")}</p>
+        </li>
+        <li>
+          <label for="screenName" class="typecho-label">{t('admin.field.nickname', {}, 'Nickname')}</label>
+          <p><input type="text" id="screenName" name="screenName" class="text w-100" value={editUser?.screenName || ''} /></p>
+          <p class="description">{t('admin.description.nickname', {}, 'The nickname can differ from the username and is shown publicly. Leave blank to use the username.')}</p>
+        </li>
+        <li>
+          <label for="url" class="typecho-label">{t('admin.field.website', {}, 'Website')}</label>
+          <p><input type="url" id="url" name="url" class="text w-100" value={editUser?.url || ''} /></p>
+          <p class="description">{t('admin.description.website', {}, 'Start with http:// or https://.')}</p>
+        </li>
+        <li>
+          <label for="group" class="typecho-label">{t('admin.field.userGroup', {}, 'User group')}</label>
+          <p>
+            <select id="group" name="group">
+              {groups.map(g => (
+                <option value={g.value} selected={editUser?.group === g.value}>{g.label}</option>
+              ))}
+            </select>
+          </p>
+        </li>
+      </ul>
+
+      <section>
+        <h3>{t('admin.field.password', {}, 'Password')}</h3>
+        <ul class="typecho-option">
+          <li>
+            <label for="password" class="typecho-label">{isEdit ? t('admin.field.newPassword', {}, 'New password') : `${t('admin.field.password', {}, 'Password')} *`}</label>
+            <p><input type="password" id="password" name="password" class="text w-100" autocomplete="new-password"
+              minlength={PASSWORD_MIN_LENGTH} required={!isEdit} /></p>
+            <p class="description">{isEdit ? t('admin.description.passwordKeep', {}, 'Leave blank to keep the current password.') : t('admin.description.passwordStrength', { count: PASSWORD_MIN_LENGTH }, `Use at least ${PASSWORD_MIN_LENGTH} characters and avoid an easy-to-guess password.`)}</p>
+          </li>
+          <li>
+            <label for="confirm" class="typecho-label">{t('admin.field.confirmPassword', {}, 'Confirm password')}</label>
+            <p><input type="password" id="confirm" name="confirm" class="text w-100" autocomplete="new-password" minlength={PASSWORD_MIN_LENGTH} /></p>
+            <p class="description">{t('admin.description.passwordConfirm', {}, 'Enter the password again to confirm it.')}</p>
+          </li>
+        </ul>
+      </section>
+
+      <ul class="typecho-option typecho-option-submit">
+        <li>
+          <button type="submit" class="btn primary">{isEdit ? t('admin.action.update', {}, 'Update') : t('admin.action.add', {}, 'Add')} {t('admin.field.user', {}, 'user')}</button>
+          <a href="/admin/manage-users" class="btn">{t('admin.action.back', {}, 'Back')}</a>
+        </li>
+      </ul>
+    </form>
+  </div>
+</Admin>

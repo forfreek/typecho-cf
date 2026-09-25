@@ -1,0 +1,318 @@
+---
+/**
+ * Default theme — Post detail component
+ *
+ * Renders a single blog post with comments section.
+ * Equivalent to the original archives/[cid].astro template section.
+ */
+import Base from '@/layouts/Base.astro';
+import CodeHighlight from './CodeHighlight.astro';
+import CommentList from './CommentList.astro';
+import type { ThemePostProps } from '@/lib/theme-props';
+import { formatDate, buildAuthorLink } from '@/lib/content';
+
+type Props = ThemePostProps;
+
+const {
+  options, urls, user, isLoggedIn, pages, sidebarData, currentPath, pluginCtx,
+  i18n,
+  post, author, categories, tags, comments, commentOptions,
+  commentPagination, prevPost, nextPost, gravatarMap,
+} = Astro.props;
+
+const t = i18n.t.bind(i18n);
+const isIndex = currentPath === '/';
+
+const totalComments = commentPagination.totalComments;
+---
+<Base
+  title={post.title}
+  options={options}
+  urls={urls}
+  user={user}
+  isLoggedIn={isLoggedIn}
+  pluginCtx={pluginCtx}
+  i18n={i18n}
+  pageContext={{ hasComments: commentOptions.allowComment, pageType: 'post' }}
+>
+  <header id="header" class="clearfix">
+    <div class="container">
+      <div class="row">
+        <div class="site-name col-mb-12 col-9">
+          <a id="logo" href={urls.siteUrl + '/'}>{options.title}</a>
+          <p class="description">{options.description}</p>
+        </div>
+        <div class="site-search col-3 kit-hidden-tb">
+          <form id="search" method="post" action={urls.siteUrl + '/'} role="search">
+            <label for="s" class="sr-only">{t('theme.search.label', {}, 'Search keywords')}</label>
+            <input type="text" id="s" name="s" class="text" placeholder={t('theme.search.placeholder', {}, 'Search keywords')} />
+            <button type="submit" class="submit" aria-label={t('theme.search.submit', {}, 'Search')}>
+              {t('theme.search.submit', {}, 'Search')}
+              <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <circle cx="7" cy="7" r="4.5" />
+                <path d="m10.5 10.5 4 4" />
+              </svg>
+            </button>
+          </form>
+        </div>
+        <div class="col-mb-12">
+          <nav id="nav-menu" class="clearfix" role="navigation">
+            <a class:list={[{ current: isIndex }]} href={urls.siteUrl + '/'}>{t('theme.nav.home', {}, 'Home')}</a>
+            {pages.map((p) => (
+              <a href={p.permalink} title={p.title}>{p.title}</a>
+            ))}
+          </nav>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="body">
+    <div class="container">
+      <div class="row">
+        <div class="col-mb-12 col-8" id="main" role="main">
+          <article class="post" itemscope itemtype="http://schema.org/BlogPosting">
+            <h1 class="post-title" itemprop="name headline">
+              <a itemprop="url" href={post.permalink}>{post.title}</a>
+            </h1>
+            <ul class="post-meta">
+              <li itemprop="author" itemscope itemtype="http://schema.org/Person">
+                {t('theme.meta.author', {}, 'Author:')} <a
+                  itemprop="name"
+                  href={author ? buildAuthorLink(author.uid, urls.siteUrl) : '#'}
+                  rel="author"
+                >
+                  {author?.screenName || author?.name || t('theme.unknown', {}, 'Unknown')}
+                </a>
+              </li>
+              <li>
+                {t('theme.meta.time', {}, 'Date:')} <time datetime={new Date(post.created * 1000).toISOString()} itemprop="datePublished">
+                  {formatDate(post.created, 'Y-m-d', options.timezone, i18n.locale)}
+                </time>
+              </li>
+              {categories.length > 0 && (
+                <li>
+                  {t('theme.meta.category', {}, 'Category:')} {categories.map((c, i) => (
+                    <>{i > 0 && ', '}<a href={c.permalink}>{c.name}</a></>
+                  ))}
+                </li>
+              )}
+            </ul>
+
+            {post.hasPassword && !post.passwordVerified ? (
+              <div class="post-content">
+                <form method="get" action={post.permalink}>
+                  <p>{t('theme.content.password', {}, 'Please enter the password to access this content:')}</p>
+                  <p><input type="password" name="password" class="text" /></p>
+                  <p><button type="submit" class="submit">{t('theme.action.submit', {}, 'Submit')}</button></p>
+                </form>
+              </div>
+            ) : (
+              <div class="post-content" itemprop="articleBody" set:html={post.content} />
+            )}
+
+            {tags.length > 0 && (
+              <p itemprop="keywords" class="tags">
+                {t('theme.meta.tags', {}, 'Tags:')} {tags.map((tag, i) => (
+                  <>{i > 0 && ', '}<a href={tag.permalink}>{tag.name}</a></>
+                ))}
+              </p>
+            )}
+          </article>
+
+          {/* Comments Section */}
+          {(!post.hasPassword || post.passwordVerified) && (
+            <div id="comments">
+              {totalComments > 0 && (
+                <>
+                  <h3>
+                    {i18n.tPlural('theme.comments.count', totalComments, {}, '{count} comments')}
+                  </h3>
+                  <ol class="comment-list">
+                    <CommentList
+                      comments={comments}
+                      commentOptions={commentOptions}
+                      gravatarMap={gravatarMap}
+                      permalink={post.permalink}
+                      i18n={i18n}
+                    />
+                  </ol>
+                  {commentPagination.enabled && commentPagination.totalPages > 1 && (
+                    <nav class="page-navigator comment-page-navigator" aria-label={t('theme.comments.ariaLabel', {}, 'Comment pagination')}>
+                      {commentPagination.prevUrl && <a class="prev" href={commentPagination.prevUrl} rel="prev">{t('theme.comments.previous', {}, 'Previous')}</a>}
+                      {commentPagination.pages.map((pageNumber) => (
+                        pageNumber === commentPagination.currentPage
+                          ? <span class="current" aria-current="page">{pageNumber}</span>
+                          : <a href={commentPagination.pageUrls[pageNumber]}>{pageNumber}</a>
+                      ))}
+                      {commentPagination.nextUrl && <a class="next" href={commentPagination.nextUrl} rel="next">{t('theme.comments.next', {}, 'Next')}</a>}
+                    </nav>
+                  )}
+                </>
+              )}
+
+              {commentOptions.allowComment ? (
+                <div id="respond" class="respond">
+                  <div class="cancel-comment-reply">
+                    <a id="cancel-comment-reply-link" href="javascript:void(0)" style="display:none"
+                      onclick="return TypechoComment.cancelReply()">{t('theme.comments.cancelReply', {}, 'Cancel reply')}</a>
+                  </div>
+                  <h3 id="response">{t('theme.comments.add', {}, 'Add a new comment')}</h3>
+                  <form method="post" action="/api/comment" id="comment-form" role="form">
+                    <input type="hidden" name="cid" value={String(post.cid)} />
+                    <input type="hidden" name="parent" id="comment-parent" value="0" />
+                    {post.hasPassword && post.passwordVerified && (
+                      <input type="hidden" name="password" value={Astro.url.searchParams.get('password') || ''} />
+                    )}
+                    {commentOptions.securityToken && (
+                      <input type="hidden" name="_" value={commentOptions.securityToken} />
+                    )}
+                    {isLoggedIn ? (
+                      <>
+                        <p>{t('theme.comments.loginAs', {}, 'Logged in as:')} <a href={urls.profileUrl}>{user?.screenName || user?.name}</a>.</p>
+                        <form method="post" action={urls.logoutUrl} class="logout-form"><button type="submit">{t('theme.sidebar.logout', {}, 'Log out')} &raquo;</button></form>
+                      </>
+                    ) : (
+                      <>
+                        <p>
+                          <label for="author" class="required">{t('theme.comments.author', {}, 'Name')}</label>
+                          <input type="text" name="author" id="author" class="text" required />
+                        </p>
+                        <p>
+                          <label for="mail" class:list={[{ required: commentOptions.requireMail }]}>{t('theme.comments.email', {}, 'Email')}</label>
+                          <input type="email" name="mail" id="mail" class="text" required={commentOptions.requireMail} />
+                        </p>
+                        <p>
+                          <label for="url">{t('theme.comments.website', {}, 'Website')}</label>
+                          <input type="url" name="url" id="url" class="text" placeholder="http://" />
+                        </p>
+                      </>
+                    )}
+                    <p>
+                      <label for="textarea" class="required">{t('theme.comments.content', {}, 'Content')}</label>
+                      <textarea rows="8" cols="50" name="text" id="textarea" class="textarea" required></textarea>
+                    </p>
+                    <p>
+                      <button type="submit" class="submit">{t('theme.comments.submit', {}, 'Submit comment')}</button>
+                    </p>
+                  </form>
+                </div>
+                <script is:inline>
+                  var TypechoComment = {
+                    dom: function (id) { return document.getElementById(id); },
+                    reply: function (commentId, coid) {
+                      var comment = this.dom(commentId);
+                      var respond = this.dom('respond');
+                      var cancelLink = this.dom('cancel-comment-reply-link');
+                      var parentInput = this.dom('comment-parent');
+                      if (!comment || !respond || !parentInput) return true;
+                      parentInput.value = coid;
+                      comment.appendChild(respond);
+                      if (cancelLink) cancelLink.style.display = '';
+                      try { this.dom('textarea').focus(); } catch (e) {}
+                      return false;
+                    },
+                    cancelReply: function () {
+                      var respond = this.dom('respond');
+                      var cancelLink = this.dom('cancel-comment-reply-link');
+                      var parentInput = this.dom('comment-parent');
+                      var comments = this.dom('comments');
+                      if (!respond || !comments || !parentInput) return false;
+                      parentInput.value = '0';
+                      if (cancelLink) cancelLink.style.display = 'none';
+                      comments.appendChild(respond);
+                      return false;
+                    }
+                  };
+                </script>
+              ) : (
+                <h3>{t('theme.comments.closed', {}, 'Comments are closed')}</h3>
+              )}
+            </div>
+          )}
+
+          <ul class="post-near">
+            <li>
+              {t('theme.navigation.previous', {}, 'Previous post:')} {prevPost ? (
+                <a href={prevPost.permalink}>{prevPost.title}</a>
+              ) : t('theme.navigation.none', {}, 'None')}
+            </li>
+            <li>
+              {t('theme.navigation.next', {}, 'Next post:')} {nextPost ? (
+                <a href={nextPost.permalink}>{nextPost.title}</a>
+              ) : t('theme.navigation.none', {}, 'None')}
+            </li>
+          </ul>
+        </div>
+
+        {sidebarData && (
+          <div class="col-mb-12 col-offset-1 col-3 kit-hidden-tb" id="secondary" role="complementary">
+            {sidebarData.recentPosts && sidebarData.recentPosts.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.recentPosts', {}, 'Recent posts')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.recentPosts.map((p) => (
+                    <li><a href={p.permalink}>{p.title}</a></li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {sidebarData.recentComments && sidebarData.recentComments.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.recentComments', {}, 'Recent comments')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.recentComments.map((c) => (
+                    <li><a href={c.permalink}>{c.author}</a>: {c.excerpt}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {sidebarData.categories && sidebarData.categories.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.categories', {}, 'Categories')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.categories.map((cat) => (
+                    <li><a href={cat.permalink}>{cat.name} ({cat.count})</a></li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {sidebarData.archives && sidebarData.archives.length > 0 && (
+              <section class="widget">
+                <h3 class="widget-title">{t('theme.sidebar.archives', {}, 'Archives')}</h3>
+                <ul class="widget-list">
+                  {sidebarData.archives.map((archive) => (
+                    <li><a href={archive.permalink}>{archive.date}</a></li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            <section class="widget">
+              <h3 class="widget-title">{t('theme.sidebar.other', {}, 'Other')}</h3>
+              <ul class="widget-list">
+                {isLoggedIn ? (
+                  <>
+                    <li class="last">
+                      <a href={urls.adminUrl}>{t('theme.sidebar.admin', {}, 'Go to admin')} ({user?.screenName || user?.name})</a>
+                    </li>
+                    <li><form method="post" action={urls.logoutUrl} class="logout-form"><button type="submit">{t('theme.sidebar.logout', {}, 'Log out')}</button></form></li>
+                  </>
+                ) : (
+                  <li class="last"><a href={urls.loginUrl}>{t('theme.sidebar.login', {}, 'Log in')}</a></li>
+                )}
+                <li><a href={urls.feedUrl}>{t('theme.sidebar.postsRss', {}, 'Posts RSS')}</a></li>
+                <li><a href={urls.commentsFeedUrl}>{t('theme.sidebar.commentsRss', {}, 'Comments RSS')}</a></li>
+              </ul>
+            </section>
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+
+  <footer id="footer" role="contentinfo">
+    &copy; {new Date().getFullYear()} <a href={urls.siteUrl}>{options.title}</a>.
+    {t('theme.footer.poweredBy', {}, 'Powered by')} <a href="https://github.com/eslizn/typecho-cf">Typecho CF</a>{t('theme.footer.poweredBySuffix', {}, '')}.
+  </footer>
+  <CodeHighlight />
+</Base>

@@ -1,0 +1,82 @@
+{
+  "name": "typecho-cf",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Typecho blog rewrite with Astro + Cloudflare Workers + D1",
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "D1 database for posts, pages, comments, users, and site options. Tables are created by the `/install` wizard, not by Wrangler migrations."
+      },
+      "BUCKET": {
+        "description": "R2 bucket for uploaded media files (images, attachments)."
+      },
+      "INSTALL_TOKEN": {
+        "description": "Recommended. Protects `/install` so only people with this token can create the first administrator. Generate with `openssl rand -hex 32`. Leave empty only for private tests — anyone who opens `/install` first can become admin."
+      }
+    }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "exports": {
+    "./plugin-sdk": "./src/lib/plugin-sdk.ts",
+    "./db": "./src/db/index.ts"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "deploy": "node scripts/deploy.mjs",
+    "queues:ensure": "node scripts/ensure-queues.mjs",
+    "queues:cleanup-legacy": "node scripts/cleanup-legacy-queue.mjs",
+    "reinstall:extensions": "node scripts/reinstall-extensions.mjs",
+    "lint": "eslint \"src/**/*.ts\"",
+    "types:workers": "node scripts/generate-worker-types.mjs",
+    "typecheck": "pnpm run types:workers && astro sync && tsc --noEmit",
+    "test": "vitest run",
+    "test:astro": "vitest run --config vitest.astro.config.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate:local": "tsx scripts/migrate.ts --target local",
+    "db:migrate:cloudflare": "tsx scripts/migrate.ts --target cloudflare",
+    "db:migrate:dry-run": "tsx scripts/migrate.ts --dry-run",
+    "reset-password": "tsx scripts/reset-password.ts --target local",
+    "reset-password:cloudflare": "tsx scripts/reset-password.ts --target cloudflare"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^14.3.2",
+    "astro": "^7.3.3",
+    "drizzle-orm": "^0.45.3",
+    "marked": "^18.0.13",
+    "sanitize-html": "^2.17.7",
+    "semver": "^7.8.5",
+    "typecho-plugin-ai": "file:src/plugins/typecho-plugin-ai",
+    "typecho-plugin-antispam": "file:src/plugins/typecho-plugin-antispam",
+    "typecho-plugin-scribe": "file:src/plugins/typecho-plugin-scribe",
+    "typecho-plugin-turnstile": "file:src/plugins/typecho-plugin-turnstile",
+    "typecho-plugin-webdav": "file:src/plugins/typecho-plugin-webdav",
+    "typecho-plugin-wechat-publisher": "file:src/plugins/typecho-plugin-wechat-publisher",
+    "typecho-theme-minimal": "file:src/themes/typecho-theme-minimal",
+    "typecho-theme-paperline": "file:src/themes/typecho-theme-paperline"
+  },
+  "devDependencies": {
+    "@libsql/client": "^0.18.0",
+    "@types/node": "^26.6.2",
+    "@types/sanitize-html": "^2.16.1",
+    "@types/semver": "^7.8.0",
+    "@typescript-eslint/eslint-plugin": "^8.70.0",
+    "@typescript-eslint/parser": "^8.70.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.11.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "typescript-eslint-typescript": "npm:typescript@6.0.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.136.0"
+  }
+}
